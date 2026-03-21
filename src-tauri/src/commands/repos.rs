@@ -4,11 +4,12 @@ use tauri::State;
 
 use crate::config::settings::SettingsState;
 
-/// Known agent/tool directory markers and their display labels
-const AGENT_MARKERS: &[(&str, &str)] = &[
-    (".claude", "Claude"),
-    (".codex", "Codex"),
-    (".cursor", "Cursor"),
+/// Agent detection: label + list of possible markers (files or dirs)
+/// An agent is detected if ANY of its markers exist in the repo.
+const AGENT_DETECTORS: &[(&str, &[&str])] = &[
+    ("Claude", &[".claude", "CLAUDE.md"]),
+    ("Codex", &[".codex"]),
+    ("Cursor", &[".cursor", ".cursorrules"]),
 ];
 
 #[derive(Debug, Clone, Serialize)]
@@ -22,10 +23,10 @@ pub struct RepoMatch {
 
 /// Detect which agent tools are configured in a repo directory
 fn detect_agents(repo_path: &Path) -> Vec<String> {
-    AGENT_MARKERS
+    AGENT_DETECTORS
         .iter()
-        .filter(|(dir, _)| repo_path.join(dir).is_dir())
-        .map(|(_, label)| label.to_string())
+        .filter(|(_, markers)| markers.iter().any(|m| repo_path.join(m).exists()))
+        .map(|(label, _)| label.to_string())
         .collect()
 }
 
