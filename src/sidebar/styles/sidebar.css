@@ -741,6 +741,12 @@ html, body, #root {
   color: var(--status-exited);
 }
 
+.settings-chat-id {
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+  font-family: "Cascadia Code", "JetBrains Mono", monospace;
+}
+
 /* Empty state */
 .empty-state {
   display: flex;

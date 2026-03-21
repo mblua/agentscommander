@@ -138,11 +138,13 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     );
   };
 
-  const handleTestBot = async (bot: TelegramBotConfig) => {
+  const handleTestBot = async (bot: TelegramBotConfig, index: number) => {
     setTestingBot(bot.id);
     setTestResult(null);
     try {
-      await TelegramAPI.sendTest(bot.token, bot.chatId);
+      const chatId = await TelegramAPI.sendTest(bot.token);
+      // Auto-fill discovered chat_id
+      updateBot(index, "chatId", chatId);
       setTestResult({ id: bot.id, ok: true });
     } catch (e: any) {
       setTestResult({ id: bot.id, ok: false, msg: e?.toString() });
@@ -416,22 +418,12 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
                         placeholder="123456:ABC-DEF..."
                       />
                     </label>
-                    <label class="settings-field">
-                      <span class="settings-label">Chat ID</span>
-                      <input
-                        class="settings-input"
-                        type="number"
-                        value={bot.chatId}
-                        onInput={(e) =>
-                          updateBot(
-                            i(),
-                            "chatId",
-                            parseInt(e.currentTarget.value) || 0
-                          )
-                        }
-                        placeholder="123456789"
-                      />
-                    </label>
+                    <Show when={bot.chatId}>
+                      <div class="settings-field">
+                        <span class="settings-label">Chat ID</span>
+                        <span class="settings-chat-id">{bot.chatId}</span>
+                      </div>
+                    </Show>
                     <label class="settings-field">
                       <span class="settings-label">Color</span>
                       <div class="settings-color-row">
@@ -455,8 +447,8 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
                     <div class="settings-bot-actions">
                       <button
                         class="settings-test-btn"
-                        onClick={() => handleTestBot(bot)}
-                        disabled={testingBot() === bot.id || !bot.token || !bot.chatId}
+                        onClick={() => handleTestBot(bot, i())}
+                        disabled={testingBot() === bot.id || !bot.token}
                       >
                         {testingBot() === bot.id ? "Testing..." : "Test"}
                       </button>

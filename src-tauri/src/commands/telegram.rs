@@ -76,19 +76,34 @@ pub async fn telegram_get_bridge(
     Ok(tg.get_bridge(uuid))
 }
 
+/// Test bot connection: discovers chat_id from the latest message sent to the bot,
+/// sends a confirmation message back, and returns the discovered chat_id.
+/// The user just needs to send any message to the bot before clicking Test.
 #[tauri::command]
-pub async fn telegram_send_test(token: String, chat_id: i64) -> Result<(), String> {
+pub async fn telegram_send_test(token: String) -> Result<i64, String> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(10))
         .build()
         .map_err(|e| e.to_string())?;
 
+    // Fetch recent updates to discover chat_id
+    let updates = crate::telegram::api::get_updates(&client, &token, 0, 0)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let chat_id = updates
+        .last()
+        .map(|u| u.chat_id)
+        .ok_or_else(|| "No messages found. Send any message to your bot in Telegram first, then click Test again.".to_string())?;
+
     crate::telegram::api::send_message(
         &client,
         &token,
         chat_id,
-        "summongate test connection OK",
+        "summongate connected",
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+
+    Ok(chat_id)
 }

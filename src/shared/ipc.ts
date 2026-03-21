@@ -100,8 +100,8 @@ export const TelegramAPI = {
   getBridge: (sessionId: string) =>
     invoke<BridgeInfo | null>("telegram_get_bridge", { sessionId }),
 
-  sendTest: (token: string, chatId: number) =>
-    invoke<void>("telegram_send_test", { token, chatId }),
+  sendTest: (token: string) =>
+    invoke<number>("telegram_send_test", { token }),
 };
 
 export function onTelegramBridgeAttached(
