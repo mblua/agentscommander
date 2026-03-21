@@ -1,0 +1,48 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg8" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#05000a"/>
+      <stop offset="100%" style="stop-color:#0a0015"/>
+    </linearGradient>
+    <filter id="neon8" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="6" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="neonSoft8" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="12" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <rect width="512" height="512" rx="90" fill="url(#bg8)"/>
+  <!-- Outer neon glow -->
+  <path d="M 130 440 L 130 175 Q 130 65 256 65 Q 382 65 382 175 L 382 440"
+        fill="none" stroke="#ff00ff" stroke-width="22" opacity="0.05" filter="url(#neonSoft8)"/>
+  <!-- Main neon tube magenta -->
+  <path d="M 130 440 L 130 175 Q 130 65 256 65 Q 382 65 382 175 L 382 440"
+        fill="none" stroke="#ff00ff" stroke-width="6" stroke-linecap="round" filter="url(#neon8)" opacity="0.85"/>
+  <!-- Inner neon tube cyan -->
+  <path d="M 160 440 L 160 192 Q 160 105 256 105 Q 352 105 352 192 L 352 440"
+        fill="none" stroke="#00ffff" stroke-width="3" stroke-linecap="round" filter="url(#neon8)" opacity="0.55"/>
+  <!-- Floor reflection -->
+  <rect x="128" y="438" width="256" height="4" rx="2" fill="#ff00ff" opacity="0.15"/>
+  <ellipse cx="256" cy="452" rx="130" ry="6" fill="#ff00ff" opacity="0.04"/>
+  <!-- Pillar bases -->
+  <rect x="120" y="422" width="20" height="22" rx="3" fill="#ff00ff" opacity="0.18"/>
+  <rect x="372" y="422" width="20" height="22" rx="3" fill="#ff00ff" opacity="0.18"/>
+  <!-- Keystone -->
+  <circle cx="256" cy="65" r="10" fill="#ff00ff" opacity="0.4" filter="url(#neonSoft8)"/>
+  <!-- Agent orb summoned inside -->
+  <circle cx="256" cy="280" r="35" fill="#00ffff" opacity="0.04"/>
+  <circle cx="256" cy="280" r="20" fill="#00ffff" opacity="0.1"/>
+  <circle cx="256" cy="280" r="8" fill="#ffffff" opacity="0.5" filter="url(#neon8)"/>
+  <!-- Floating particles -->
+  <circle cx="210" cy="250" r="2" fill="#ff00ff" opacity="0.35">
+    <animate attributeName="cy" values="250;200;250" dur="4s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="310" cy="300" r="1.5" fill="#00ffff" opacity="0.3">
+    <animate attributeName="cy" values="300;260;300" dur="3.5s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="256" cy="370" r="2" fill="#ff00ff" opacity="0.3">
+    <animate attributeName="cy" values="370;310;370" dur="5s" repeatCount="indefinite"/>
+  </circle>
+</svg>

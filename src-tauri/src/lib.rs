@@ -33,6 +33,9 @@ pub fn run() {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;
 
+            let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
+                .expect("Failed to load app icon");
+
             // Create Sidebar window
             let _sidebar = WebviewWindowBuilder::new(
                 app,
@@ -40,6 +43,8 @@ pub fn run() {
                 WebviewUrl::App("index.html?window=sidebar".into()),
             )
             .title("summongate")
+            .icon(icon.clone())
+            .expect("Failed to set sidebar icon")
             .inner_size(280.0, 600.0)
             .min_inner_size(200.0, 400.0)
             .decorations(false)
@@ -53,6 +58,8 @@ pub fn run() {
                 WebviewUrl::App("index.html?window=terminal".into()),
             )
             .title("Terminal")
+            .icon(icon)
+            .expect("Failed to set terminal icon")
             .inner_size(900.0, 600.0)
             .min_inner_size(400.0, 300.0)
             .decorations(false)
