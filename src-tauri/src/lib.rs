@@ -48,7 +48,6 @@ pub fn run() {
             .inner_size(280.0, 600.0)
             .min_inner_size(200.0, 400.0)
             .decorations(false)
-            .transparent(false)
             .build()?;
 
             // Create Terminal window
