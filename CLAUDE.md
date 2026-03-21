@@ -221,7 +221,8 @@ This script (`scripts/kill-dev.ps1`) **only** kills `target\debug` instances. It
 **ABSOLUTE RULES:**
 1. **NEVER use `taskkill`, `Stop-Process`, `kill`, or ANY direct process-killing command on summongate.exe.** The ONLY allowed way is `npm run kill-dev`.
 2. **NEVER kill, stop, or interfere with a PROD instance (Program Files) under any circumstance.**
-3. When in doubt, **ask the user**.
+3. **BEFORE launching `npm run tauri dev`**, ALWAYS check if port 1420 is in use (`netstat -ano | findstr :1420` or equivalent). If the port is occupied, **DO NOT launch another instance**. Inform the user and ask how to proceed.
+4. When in doubt, **ask the user**.
 
 ---
 
