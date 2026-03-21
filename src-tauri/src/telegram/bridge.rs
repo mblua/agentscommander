@@ -146,9 +146,11 @@ async fn output_task(
                         if !cleaned.is_empty() {
                             logger.log("FILTERED", &session_id, &cleaned);
                             buffer.push_str(&cleaned);
+                            // Only reset deadline when we actually have new content
+                            // Otherwise noise (thinking animations) keeps pushing
+                            // the timeout forward and nothing ever flushes
+                            deadline = tokio::time::Instant::now() + flush_timeout;
                         }
-
-                        deadline = tokio::time::Instant::now() + flush_timeout;
 
                         let meaningful_len = buffer.trim().len();
                         if meaningful_len > 2000 || (buffer.contains('\n') && meaningful_len >= 10) {
