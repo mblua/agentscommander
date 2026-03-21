@@ -6,17 +6,33 @@ RTK is a CLI proxy installed on this machine that compresses command outputs to 
 
 - **Repo:** https://github.com/rtk-ai/rtk
 - RTK only compresses output from Bash tool calls, not native Claude Code tools (Read, Grep, Glob)
-- On Windows it uses `--claude-md` mode (instructions in prompt) instead of a shell hook
 - If RTK has a dedicated filter for a command, it compresses the output. If not, it passes through unchanged. This means RTK is always safe to use.
 
-## Requirements
+## Installation Modes
 
-1. **RTK must be installed on the machine.** It is a global CLI tool, not a per-repo dependency.
-2. **Add the RTK instruction block to the project's `CLAUDE.md`.** This is the only per-repo step needed.
+RTK has two modes depending on the platform:
 
-## How to Implement
+### Unix (macOS/Linux) - Hook mode
+On Unix, RTK can install a shell hook in `settings.json` that automatically intercepts Bash tool calls. This is the preferred mode:
 
-Add the following block at the end of your `CLAUDE.md`:
+```bash
+rtk init -g --auto-patch   # Installs hook in ~/.claude/settings.json + RTK.md
+```
+
+This adds a `PreToolUse` hook to `settings.json` that wraps all Bash commands with RTK automatically - no need for manual `rtk` prefixing.
+
+### Windows - CLAUDE.md mode (current machine)
+On Windows, RTK does NOT support hooks. The `rtk init -g` command falls back to `--claude-md` mode automatically. The mechanism is:
+
+1. An instruction block in `CLAUDE.md` tells Claude to prefix commands with `rtk`
+2. Claude reads the instruction and applies `rtk` manually to each Bash call
+3. The `[rtk] /!\ No hook installed` warning is **expected on Windows** - it cannot be resolved because hooks are Unix-only
+
+**The warning is cosmetic noise.** RTK works correctly on Windows via the CLAUDE.md instructions. The compression happens regardless of whether a hook or manual prefix is used.
+
+## Per-Repo Setup (Windows)
+
+Add the condensed instruction block at the end of the project's `CLAUDE.md`:
 
 ```markdown
 <!-- rtk-instructions -->
@@ -35,6 +51,8 @@ Meta: `rtk gain` to view token savings statistics, `rtk discover` to find missed
 <!-- /rtk-instructions -->
 ```
 
+**Do NOT use `rtk init`** for per-repo setup - it injects the full verbose block (~1,400 tokens). The condensed block above is ~200 tokens and equally effective since the full command reference is already in the global `~/.claude/CLAUDE.md`.
+
 ## Token Savings Overview
 
 | Category | Commands | Typical Savings |
@@ -52,5 +70,7 @@ Overall average: **60-90% token reduction** on common development operations.
 
 ## Notes
 
-- The condensed instruction block (~680 chars, ~200 tokens) is 85% smaller than the full version from `rtk init` (~4,757 chars, ~1,400 tokens).
-- The HTML comments (`<!-- rtk-instructions -->`) serve as markers to easily locate and update the block across repos.
+- The condensed instruction block (~200 tokens) is 85% smaller than the full version from `rtk init` (~1,400 tokens)
+- The HTML comments (`<!-- rtk-instructions -->`) serve as markers to easily locate and update the block across repos
+- `rtk init --show` reports the current configuration status for the repo
+- The `[rtk] /!\ No hook installed` warning on Windows is a known limitation and can be ignored
