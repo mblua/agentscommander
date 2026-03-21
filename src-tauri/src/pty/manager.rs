@@ -55,10 +55,29 @@ impl PtyManager {
             .openpty(size)
             .map_err(|e| AppError::PtyError(e.to_string()))?;
 
-        let mut command = CommandBuilder::new(cmd);
-        for arg in args {
-            command.arg(arg);
-        }
+        // On Windows, non-.exe commands (like .cmd, .bat, or bare names that
+        // resolve to .cmd scripts) need to be wrapped with cmd.exe /C so the
+        // shell can resolve them from PATH.
+        let is_direct_exe = cmd.to_lowercase().ends_with(".exe")
+            || std::path::Path::new(cmd)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"));
+
+        let mut command = if cfg!(windows) && !is_direct_exe {
+            let mut c = CommandBuilder::new("cmd.exe");
+            c.arg("/C");
+            c.arg(cmd);
+            for arg in args {
+                c.arg(arg);
+            }
+            c
+        } else {
+            let mut c = CommandBuilder::new(cmd);
+            for arg in args {
+                c.arg(arg);
+            }
+            c
+        };
         command.cwd(cwd);
         command.env("TERM", "xterm-256color");
 
