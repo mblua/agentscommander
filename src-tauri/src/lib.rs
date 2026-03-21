@@ -1,10 +1,12 @@
 pub mod commands;
+pub mod config;
 pub mod errors;
 pub mod pty;
 pub mod session;
 
 use std::sync::{Arc, Mutex};
 
+use config::settings::{AppSettings, SettingsState};
 use pty::manager::PtyManager;
 use session::manager::SessionManager;
 
@@ -12,10 +14,12 @@ use session::manager::SessionManager;
 pub fn run() {
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
     let pty_mgr = Arc::new(Mutex::new(PtyManager::new()));
+    let settings: SettingsState = Arc::new(tokio::sync::RwLock::new(AppSettings::default()));
 
     tauri::Builder::default()
         .manage(session_mgr)
         .manage(pty_mgr)
+        .manage(settings)
         .setup(|app| {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;
@@ -56,6 +60,8 @@ pub fn run() {
             commands::session::get_active_session,
             commands::pty::pty_write,
             commands::pty::pty_resize,
+            commands::config::get_settings,
+            commands::config::update_settings,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

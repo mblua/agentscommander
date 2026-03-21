@@ -1,10 +1,22 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import type { Session, PtyOutputEvent } from "./types";
+import type { Session, PtyOutputEvent, AppSettings } from "./types";
+
+export interface CreateSessionOptions {
+  shell?: string;
+  shellArgs?: string[];
+  cwd?: string;
+  sessionName?: string;
+}
 
 export const SessionAPI = {
-  create: (profileName?: string) =>
-    invoke<Session>("create_session", { profileName: profileName ?? null }),
+  create: (opts?: CreateSessionOptions) =>
+    invoke<Session>("create_session", {
+      shell: opts?.shell ?? null,
+      shellArgs: opts?.shellArgs ?? null,
+      cwd: opts?.cwd ?? null,
+      sessionName: opts?.sessionName ?? null,
+    }),
 
   destroy: (id: string) => invoke<void>("destroy_session", { id }),
 
@@ -24,6 +36,12 @@ export const PtyAPI = {
 
   resize: (sessionId: string, cols: number, rows: number) =>
     invoke<void>("pty_resize", { sessionId, cols, rows }),
+};
+
+export const SettingsAPI = {
+  get: () => invoke<AppSettings>("get_settings"),
+  update: (settings: AppSettings) =>
+    invoke<void>("update_settings", { newSettings: settings }),
 };
 
 export function onPtyOutput(

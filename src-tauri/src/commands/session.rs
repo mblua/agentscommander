@@ -3,30 +3,49 @@ use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, State};
 use uuid::Uuid;
 
+use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionInfo;
 
+/// Create a new session. Optionally override shell/args/cwd/name (for action buttons).
+/// Falls back to settings defaults when not provided.
 #[tauri::command]
 pub async fn create_session(
     app: AppHandle,
     session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
-    profile_name: Option<String>,
+    settings: State<'_, SettingsState>,
+    shell: Option<String>,
+    shell_args: Option<Vec<String>>,
+    cwd: Option<String>,
+    session_name: Option<String>,
 ) -> Result<SessionInfo, String> {
-    let _ = profile_name; // TODO: use profiles in Phase 2
+    let cfg = settings.read().await;
 
-    let shell = "powershell.exe".to_string();
-    let shell_args = vec!["-NoLogo".to_string()];
-    let cwd = dirs::home_dir()
-        .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|| "C:\\".to_string());
+    let shell = shell.unwrap_or_else(|| cfg.default_shell.clone());
+    let shell_args = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
+    let cwd = cwd.unwrap_or_else(|| {
+        dirs::home_dir()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "C:\\".to_string())
+    });
+
+    drop(cfg); // release lock before acquiring session manager
 
     let mgr = session_mgr.read().await;
-    let session = mgr
+    let mut session = mgr
         .create_session(shell.clone(), shell_args.clone(), cwd.clone())
         .await
         .map_err(|e| e.to_string())?;
+
+    // Override name if provided
+    if let Some(name) = session_name {
+        mgr.rename_session(session.id, name.clone())
+            .await
+            .map_err(|e| e.to_string())?;
+        session.name = name;
+    }
 
     let id = session.id;
 

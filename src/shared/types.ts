@@ -64,3 +64,18 @@ export interface PtyOutputEvent {
   sessionId: string;
   data: number[];
 }
+
+export interface ActionButton {
+  id: string;
+  label: string;
+  command: string;
+  args: string[];
+  color: string;
+  workingDirectory: string;
+}
+
+export interface AppSettings {
+  defaultShell: string;
+  defaultShellArgs: string[];
+  actionButtons: ActionButton[];
+}
