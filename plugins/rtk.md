@@ -8,31 +8,58 @@ RTK is a CLI proxy installed on this machine that compresses command outputs to 
 - RTK only compresses output from Bash tool calls, not native Claude Code tools (Read, Grep, Glob)
 - If RTK has a dedicated filter for a command, it compresses the output. If not, it passes through unchanged. This means RTK is always safe to use.
 
-## Installation Modes
+## Setup (two parts, both required)
 
-RTK has two modes depending on the platform:
+### Part 1: Hook file (suppresses the warning)
 
-### Unix (macOS/Linux) - Hook mode
-On Unix, RTK can install a shell hook in `settings.json` that automatically intercepts Bash tool calls. This is the preferred mode:
-
-```bash
-rtk init -g --auto-patch   # Installs hook in ~/.claude/settings.json + RTK.md
+RTK checks for a hook file at `~/.claude/hooks/rtk-rewrite.sh`. Without it, every command prints:
+```
+[rtk] /!\ No hook installed - run `rtk init -g` for automatic token savings
 ```
 
-This adds a `PreToolUse` hook to `settings.json` that wraps all Bash commands with RTK automatically - no need for manual `rtk` prefixing.
+The hook also auto-rewrites Bash commands so Claude does not need to prefix `rtk` manually.
 
-### Windows - CLAUDE.md mode (current machine)
-On Windows, RTK does NOT support hooks. The `rtk init -g` command falls back to `--claude-md` mode automatically. The mechanism is:
+**Install:**
+```bash
+# Copy from the RTK installation
+cp ~/.cargo/git/checkouts/rtk-*/*/hooks/rtk-rewrite.sh ~/.claude/hooks/rtk-rewrite.sh
 
-1. An instruction block in `CLAUDE.md` tells Claude to prefix commands with `rtk`
-2. Claude reads the instruction and applies `rtk` manually to each Bash call
-3. The `[rtk] /!\ No hook installed` warning is **expected on Windows** - it cannot be resolved because hooks are Unix-only
+# Or let RTK do it (Unix only - on Windows, copy manually as above)
+rtk init -g --auto-patch
+```
 
-**The warning is cosmetic noise.** RTK works correctly on Windows via the CLAUDE.md instructions. The compression happens regardless of whether a hook or manual prefix is used.
+**Requires `jq`** - the hook script uses jq to parse and rewrite tool inputs.
 
-## Per-Repo Setup (Windows)
+### Part 2: PreToolUse hook in settings.json
 
-Add the condensed instruction block at the end of the project's `CLAUDE.md`:
+The hook file alone suppresses the warning, but for Claude Code to actually execute the rewriting, the hook must also be registered in `~/.claude/settings.json`:
+
+```json
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/rtk-rewrite.sh"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+With both parts in place:
+- No warning on any `rtk` command
+- Claude Code auto-rewrites Bash commands to use `rtk` (no manual prefix needed)
+- The CLAUDE.md instruction block is still useful as a fallback/reminder
+
+### Part 3 (optional): CLAUDE.md instruction block
+
+Add to the project's `CLAUDE.md` as a fallback in case the hook is not present:
 
 ```markdown
 <!-- rtk-instructions -->
@@ -51,8 +78,6 @@ Meta: `rtk gain` to view token savings statistics, `rtk discover` to find missed
 <!-- /rtk-instructions -->
 ```
 
-**Do NOT use `rtk init`** for per-repo setup - it injects the full verbose block (~1,400 tokens). The condensed block above is ~200 tokens and equally effective since the full command reference is already in the global `~/.claude/CLAUDE.md`.
-
 ## Token Savings Overview
 
 | Category | Commands | Typical Savings |
@@ -70,7 +95,7 @@ Overall average: **60-90% token reduction** on common development operations.
 
 ## Notes
 
-- The condensed instruction block (~200 tokens) is 85% smaller than the full version from `rtk init` (~1,400 tokens)
+- The condensed CLAUDE.md block (~200 tokens) is 85% smaller than the full version from `rtk init` (~1,400 tokens)
 - The HTML comments (`<!-- rtk-instructions -->`) serve as markers to easily locate and update the block across repos
 - `rtk init --show` reports the current configuration status for the repo
-- The `[rtk] /!\ No hook installed` warning on Windows is a known limitation and can be ignored
+- RTK version 0.31.0+ includes the rate-limited warning fix for Windows (PR #742)
