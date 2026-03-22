@@ -207,7 +207,14 @@ Config export/import, session history, notifications, snippets, cross-platform.
 
 ## CRITICAL — Running the App
 
-**Before running `npm run tauri dev` or `npm run tauri build`, kill previous dev instances using ONLY the safe script:**
+**Before running `npm run tauri dev` or `npm run tauri build`:**
+
+1. **Sync with main**: If on a feature branch, ALWAYS fetch origin and merge `main` into the current branch if main is ahead. This prevents working with stale code and avoids missing renames, config changes, or fixes already merged to main.
+   ```bash
+   git fetch origin
+   git merge origin/main
+   ```
+2. **Kill previous dev instances** using ONLY the safe script:
 
 ```bash
 npm run kill-dev
