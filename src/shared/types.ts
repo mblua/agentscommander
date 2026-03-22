@@ -8,6 +8,7 @@ export interface Session {
   status: SessionStatus;
   waitingForInput: boolean;
   lastPrompt: string | null;
+  gitBranch: string | null;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
