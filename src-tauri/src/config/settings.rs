@@ -11,7 +11,6 @@ pub struct AgentConfig {
     pub id: String,
     pub label: String,
     pub command: String,
-    pub args: Vec<String>,
     pub color: String,
     /// If true, run `git pull` before launching the agent
     pub git_pull_before: bool,

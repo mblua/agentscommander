@@ -71,7 +71,6 @@ export interface AgentConfig {
   id: string;
   label: string;
   command: string;
-  args: string[];
   color: string;
   gitPullBefore: boolean;
 }
