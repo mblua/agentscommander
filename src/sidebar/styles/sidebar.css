@@ -676,6 +676,48 @@ html, body, #root {
 }
 
 /* Detach button on session item */
+/* Voice-to-text microphone button */
+.session-item-mic {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 11px;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.session-item:hover .session-item-mic {
+  display: flex;
+}
+
+.session-item-mic.recording {
+  display: flex;
+  color: #ef4444;
+  animation: mic-pulse 1s ease-in-out infinite;
+}
+
+.session-item-mic.error {
+  display: flex;
+  color: #f59e0b;
+}
+
+.session-item-mic:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+@keyframes mic-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
+}
+
 .session-item-detach {
   display: none;
   align-items: center;

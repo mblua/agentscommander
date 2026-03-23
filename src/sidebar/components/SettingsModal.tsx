@@ -2,6 +2,7 @@ import { Component, createSignal, For, Show, onMount } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppSettings, AgentConfig, TelegramBotConfig } from "../../shared/types";
 import { SettingsAPI, TelegramAPI } from "../../shared/ipc";
+import { settingsStore } from "../stores/settings";
 
 const AGENT_PRESETS: Record<string, Omit<AgentConfig, "id">> = {
   claude: {
@@ -163,6 +164,8 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     await SettingsAPI.update(s);
     // Apply always-on-top immediately
     await getCurrentWindow().setAlwaysOnTop(s.sidebarAlwaysOnTop);
+    // Refresh settings store so mic button visibility updates
+    settingsStore.refresh();
     setSaving(false);
     props.onClose();
   };
@@ -238,6 +241,36 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
                 />
                 <span>Raise terminal when clicking sidebar</span>
               </label>
+            </div>
+
+            {/* Voice to Text */}
+            <div class="settings-section">
+              <div class="settings-section-title">Voice to Text</div>
+              <label class="settings-checkbox-field">
+                <input
+                  type="checkbox"
+                  class="settings-checkbox"
+                  checked={settings()!.voiceToTextEnabled}
+                  onChange={(e) =>
+                    updateField("voiceToTextEnabled", e.currentTarget.checked)
+                  }
+                />
+                <span>Enable microphone button on sessions</span>
+              </label>
+              <Show when={settings()!.voiceToTextEnabled}>
+                <label class="settings-field">
+                  <span class="settings-label">Gemini API Key</span>
+                  <input
+                    class="settings-input"
+                    type="password"
+                    value={settings()!.geminiApiKey}
+                    onInput={(e) =>
+                      updateField("geminiApiKey", e.currentTarget.value)
+                    }
+                    placeholder="AIza..."
+                  />
+                </label>
+              </Show>
             </div>
 
             {/* Repo Paths */}

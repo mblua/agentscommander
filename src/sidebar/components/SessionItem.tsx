@@ -1,8 +1,14 @@
 import { Component, createSignal, Show, For } from "solid-js";
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
-import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI } from "../../shared/ipc";
+import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI, PtyAPI, VoiceAPI } from "../../shared/ipc";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { bridgesStore } from "../stores/bridges";
+import { settingsStore } from "../stores/settings";
+
+// Global recording state: only one session can record at a time
+const [recordingSessionId, setRecordingSessionId] = createSignal<string | null>(null);
+let activeMediaRecorder: MediaRecorder | null = null;
+let audioChunks: Blob[] = [];
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -89,6 +95,79 @@ const SessionItem: Component<{
     }
   };
 
+  const [micError, setMicError] = createSignal(false);
+
+  const isRecording = () => recordingSessionId() === props.session.id;
+
+  const stopRecording = () => {
+    if (activeMediaRecorder && activeMediaRecorder.state !== "inactive") {
+      activeMediaRecorder.stop();
+    }
+  };
+
+  const startRecording = async () => {
+    // Stop any other session's recording first
+    if (recordingSessionId()) {
+      stopRecording();
+    }
+
+    setMicError(false);
+
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      audioChunks = [];
+
+      const recorder = new MediaRecorder(stream);
+      activeMediaRecorder = recorder;
+      setRecordingSessionId(props.session.id);
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunks.push(e.data);
+      };
+
+      recorder.onstop = async () => {
+        // Stop all tracks to release the mic
+        stream.getTracks().forEach((t) => t.stop());
+        setRecordingSessionId(null);
+        activeMediaRecorder = null;
+
+        if (audioChunks.length === 0) return;
+
+        const blob = new Blob(audioChunks, { type: recorder.mimeType });
+        const buffer = await blob.arrayBuffer();
+        const bytes = Array.from(new Uint8Array(buffer));
+
+        try {
+          const text = await VoiceAPI.transcribe(bytes);
+          if (text) {
+            const encoder = new TextEncoder();
+            await PtyAPI.write(props.session.id, encoder.encode(text));
+          }
+        } catch (err) {
+          console.error("Voice transcription failed:", err);
+          setMicError(true);
+          setTimeout(() => setMicError(false), 3000);
+        }
+      };
+
+      recorder.start();
+    } catch (err) {
+      console.error("Microphone access failed:", err);
+      setMicError(true);
+      setRecordingSessionId(null);
+      setTimeout(() => setMicError(false), 3000);
+    }
+  };
+
+  const handleMicClick = (e: MouseEvent) => {
+    e.stopPropagation();
+    if (isRecording()) {
+      stopRecording();
+    } else {
+      void startRecording();
+    }
+  };
+
   const handleDetach = (e: MouseEvent) => {
     e.stopPropagation();
     WindowAPI.detach(props.session.id);
@@ -134,6 +213,15 @@ const SessionItem: Component<{
         </Show>
         <div class="session-item-shell">{props.session.shell}</div>
       </div>
+      <Show when={settingsStore.voiceEnabled}>
+        <button
+          class={`session-item-mic ${isRecording() ? "recording" : ""} ${micError() ? "error" : ""}`}
+          onClick={handleMicClick}
+          title={isRecording() ? "Stop recording" : micError() ? "Mic error" : "Voice to text"}
+        >
+          &#x1F399;
+        </button>
+      </Show>
       <button
         class="session-item-detach"
         onClick={handleDetach}

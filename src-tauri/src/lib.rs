@@ -216,6 +216,7 @@ pub fn run() {
             commands::telegram::telegram_send_test,
             commands::window::detach_terminal,
             commands::window::close_detached_terminal,
+            commands::voice::voice_transcribe,
         ])
         .run(tauri::generate_context!())
         .expect("error while running application");

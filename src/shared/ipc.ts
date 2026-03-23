@@ -90,6 +90,12 @@ export function onSessionRenamed(
   );
 }
 
+// Voice API
+export const VoiceAPI = {
+  transcribe: (audio: number[]) =>
+    invoke<string>("voice_transcribe", { audio }),
+};
+
 // Window API
 export const WindowAPI = {
   detach: (sessionId: string) =>
