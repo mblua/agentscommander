@@ -1,6 +1,6 @@
 import { createSignal } from "solid-js";
-import type { AppSettings } from "../../shared/types";
-import { SettingsAPI } from "../../shared/ipc";
+import type { AppSettings } from "../types";
+import { SettingsAPI } from "../ipc";
 
 const [settings, setSettings] = createSignal<AppSettings | null>(null);
 

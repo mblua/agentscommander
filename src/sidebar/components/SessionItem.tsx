@@ -1,15 +1,10 @@
-import { Component, createSignal, Show, For, onCleanup } from "solid-js";
+import { Component, createSignal, Show, For } from "solid-js";
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
-import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI, PtyAPI, VoiceAPI, DebugAPI } from "../../shared/ipc";
-import { getConsoleText } from "../../shared/console-capture";
+import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI } from "../../shared/ipc";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { bridgesStore } from "../stores/bridges";
-import { settingsStore } from "../stores/settings";
-
-// Global recording state: only one session can record at a time
-const [recordingSessionId, setRecordingSessionId] = createSignal<string | null>(null);
-const [processingSessionId, setProcessingSessionId] = createSignal<string | null>(null);
-let globalStopFn: (() => void) | null = null;
+import { settingsStore } from "../../shared/stores/settings";
+import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -24,176 +19,15 @@ const SessionItem: Component<{
   const [editValue, setEditValue] = createSignal("");
   const [showBotMenu, setShowBotMenu] = createSignal(false);
   const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
-  const [micError, setMicError] = createSignal<string | null>(null);
-  const [recordingSeconds, setRecordingSeconds] = createSignal(0);
-  const [audioLevel, setAudioLevel] = createSignal(0);
   let inputRef!: HTMLInputElement;
-  let recordingTimer: ReturnType<typeof setInterval> | null = null;
-  let levelTimer: ReturnType<typeof setInterval> | null = null;
-
-  // Per-instance recording state (not shared across SessionItem instances)
-  let localRecorder: MediaRecorder | null = null;
-  let localAudioCtx: AudioContext | null = null;
-  let localAnalyser: AnalyserNode | null = null;
-  let localChunks: Blob[] = [];
-  let localMimeType = "";
 
   const bridge = () => bridgesStore.getBridge(props.session.id);
-  const isRecording = () => recordingSessionId() === props.session.id;
-  const isProcessing = () => processingSessionId() === props.session.id;
-
-  onCleanup(() => {
-    if (recordingTimer) clearInterval(recordingTimer);
-    if (levelTimer) clearInterval(levelTimer);
-  });
-
-  const startAudioLevelMonitor = (stream: MediaStream) => {
-    try {
-      localAudioCtx = new AudioContext();
-      localAnalyser = localAudioCtx.createAnalyser();
-      localAnalyser.fftSize = 256;
-      const source = localAudioCtx.createMediaStreamSource(stream);
-      source.connect(localAnalyser);
-      const dataArray = new Uint8Array(localAnalyser.frequencyBinCount);
-
-      levelTimer = setInterval(() => {
-        if (!localAnalyser) return;
-        localAnalyser.getByteFrequencyData(dataArray);
-        const sum = dataArray.reduce((a, b) => a + b, 0);
-        const avg = sum / dataArray.length / 255;
-        setAudioLevel(avg);
-      }, 50);
-    } catch {
-      // Audio context not available
-    }
-  };
-
-  const stopAudioLevelMonitor = () => {
-    if (levelTimer) {
-      clearInterval(levelTimer);
-      levelTimer = null;
-    }
-    if (localAudioCtx) {
-      localAudioCtx.close().catch(() => {});
-      localAudioCtx = null;
-      localAnalyser = null;
-    }
-    setAudioLevel(0);
-  };
-
-  const stopRecording = () => {
-    if (localRecorder && localRecorder.state !== "inactive") {
-      localRecorder.stop();
-    }
-  };
-
-  const startRecording = async () => {
-    // Stop any other session's recording first
-    if (recordingSessionId() && globalStopFn) {
-      globalStopFn();
-    }
-
-    setMicError(null);
-    setRecordingSeconds(0);
-
-    try {
-      console.log("[Voice] Requesting microphone access...");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      console.log("[Voice] Microphone access granted, tracks:", stream.getAudioTracks().length);
-      localChunks = [];
-
-      const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-        ? "audio/webm;codecs=opus"
-        : undefined;
-      console.log("[Voice] MediaRecorder mimeType:", mimeType || "default");
-      const recorder = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
-      localRecorder = recorder;
-      localMimeType = recorder.mimeType || "audio/webm";
-      setRecordingSessionId(props.session.id);
-      globalStopFn = stopRecording;
-
-      recordingTimer = setInterval(() => {
-        setRecordingSeconds((s) => s + 1);
-      }, 1000);
-
-      startAudioLevelMonitor(stream);
-
-      recorder.ondataavailable = (e) => {
-        if (e.data.size > 0) localChunks.push(e.data);
-      };
-
-      recorder.onerror = (e) => {
-        console.error("[Voice] MediaRecorder error:", e);
-      };
-
-      recorder.onstop = async () => {
-        console.log("[Voice] Recording stopped, chunks:", localChunks.length);
-        stream.getTracks().forEach((t) => t.stop());
-
-        if (recordingTimer) {
-          clearInterval(recordingTimer);
-          recordingTimer = null;
-        }
-        stopAudioLevelMonitor();
-
-        setRecordingSessionId(null);
-        localRecorder = null;
-        globalStopFn = null;
-
-        if (localChunks.length === 0) return;
-
-        setProcessingSessionId(props.session.id);
-
-        const blob = new Blob(localChunks, { type: localMimeType });
-        console.log("[Voice] Audio blob size:", blob.size, "type:", blob.type);
-        const buffer = await blob.arrayBuffer();
-        const bytes = Array.from(new Uint8Array(buffer));
-        console.log("[Voice] Sending", bytes.length, "bytes to Gemini...");
-
-        try {
-          const text = await VoiceAPI.transcribe(bytes, localMimeType);
-          console.log("[Voice] Transcription result:", text);
-          if (text) {
-            const encoder = new TextEncoder();
-            await PtyAPI.write(props.session.id, encoder.encode(text));
-            console.log("[Voice] Text written to PTY");
-          }
-        } catch (err: any) {
-          const msg = typeof err === "string" ? err : err?.message || "Transcription failed";
-          console.error("[Voice] Transcription failed:", msg);
-          setMicError(msg);
-          DebugAPI.saveLogs(getConsoleText()).catch(() => {});
-          setTimeout(() => setMicError(null), 5000);
-        } finally {
-          setProcessingSessionId(null);
-        }
-      };
-
-      console.log("[Voice] Recording started");
-      recorder.start();
-    } catch (err: any) {
-      const msg = err?.message || err?.name || "Microphone access failed";
-      console.error("[Voice] Microphone access failed:", msg, err);
-      setMicError(msg);
-      DebugAPI.saveLogs(getConsoleText()).catch(() => {});
-      setRecordingSessionId(null);
-      globalStopFn = null;
-      if (recordingTimer) {
-        clearInterval(recordingTimer);
-        recordingTimer = null;
-      }
-      setTimeout(() => setMicError(null), 5000);
-    }
-  };
+  const isRecording = () => voiceRecorder.recordingSessionId() === props.session.id;
+  const isProcessing = () => voiceRecorder.processingSessionId() === props.session.id;
 
   const handleMicClick = (e: MouseEvent) => {
     e.stopPropagation();
-    if (isProcessing()) return;
-    if (isRecording()) {
-      stopRecording();
-    } else {
-      void startRecording();
-    }
+    voiceRecorder.toggle(props.session.id);
   };
 
   const handleTelegramClick = async (e: MouseEvent) => {
@@ -271,11 +105,6 @@ const SessionItem: Component<{
     SessionAPI.destroy(props.session.id);
   };
 
-  const formatTime = (s: number) => {
-    const m = Math.floor(s / 60);
-    const sec = s % 60;
-    return `${m}:${sec.toString().padStart(2, "0")}`;
-  };
 
   return (
     <div
@@ -312,10 +141,10 @@ const SessionItem: Component<{
             <div class="voice-level-bar">
               <div
                 class="voice-level-fill"
-                style={{ width: `${Math.min(audioLevel() * 100 * 2.5, 100)}%` }}
+                style={{ width: `${Math.min(voiceRecorder.audioLevel() * 100 * 2.5, 100)}%` }}
               />
             </div>
-            <span class="voice-time">{formatTime(recordingSeconds())}</span>
+            <span class="voice-time">{formatRecordingTime(voiceRecorder.recordingSeconds())}</span>
           </div>
         </Show>
 
@@ -326,13 +155,13 @@ const SessionItem: Component<{
           </div>
         </Show>
 
-        <Show when={micError()}>
+        <Show when={voiceRecorder.micError()}>
           <div class="session-item-voice-indicator error">
-            <span class="voice-error-text">{micError()}</span>
+            <span class="voice-error-text">{voiceRecorder.micError()}</span>
           </div>
         </Show>
 
-        <Show when={!isRecording() && !isProcessing() && !micError()}>
+        <Show when={!isRecording() && !isProcessing() && !voiceRecorder.micError()}>
           <Show when={props.session.gitBranch}>
             <div class="session-item-branch" title={props.session.gitBranch!}>
               {props.session.gitBranch}
@@ -343,9 +172,9 @@ const SessionItem: Component<{
       </div>
       <Show when={settingsStore.voiceEnabled}>
         <button
-          class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${micError() ? "error" : ""}`}
+          class={`session-item-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""} ${voiceRecorder.micError() ? "error" : ""}`}
           onClick={handleMicClick}
-          title={isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : micError() ? micError()! : "Voice to text"}
+          title={isRecording() ? "Stop recording" : isProcessing() ? "Transcribing..." : voiceRecorder.micError() ? voiceRecorder.micError()! : "Voice to text"}
         >
           &#x1F399;
         </button>

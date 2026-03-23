@@ -2,7 +2,7 @@ import { Component, createSignal, For, Show, onMount } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppSettings, AgentConfig, TelegramBotConfig } from "../../shared/types";
 import { SettingsAPI, TelegramAPI } from "../../shared/ipc";
-import { settingsStore } from "../stores/settings";
+import { settingsStore } from "../../shared/stores/settings";
 
 const GEMINI_MODELS = [
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (recommended)" },

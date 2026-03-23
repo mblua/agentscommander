@@ -19,7 +19,7 @@ import {
 import { registerShortcuts, unregisterShortcuts } from "../shared/shortcuts";
 import { sessionsStore } from "./stores/sessions";
 import { bridgesStore } from "./stores/bridges";
-import { settingsStore } from "./stores/settings";
+import { settingsStore } from "../shared/stores/settings";
 import Titlebar from "./components/Titlebar";
 import SessionList from "./components/SessionList";
 import Toolbar from "./components/Toolbar";

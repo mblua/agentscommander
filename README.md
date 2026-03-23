@@ -13,9 +13,11 @@ Built with **Tauri 2.x** (Rust) + **SolidJS** (TypeScript) + **xterm.js** (WebGL
 - **Detached windows** - Pop a session out into its own dedicated terminal window
 - **Idle detection** - Visual indicator (green dot) when a session is idle vs busy
 - **Agent launcher** - Open pre-configured CLI agents (Claude Code, etc.) from the toolbar
+- **Voice-to-text** - Dictate into any session via Gemini transcription (push-to-talk in terminal, toggle in sidebar)
+- **Clear agent input** - One-click button to clear the coding agent's input line (Ctrl+U)
 - **Telegram bridge** - Attach a Telegram bot to a session for remote monitoring
 - **Custom titlebar** - Frameless windows with draggable titlebar, no native decorations
-- **Keyboard shortcuts** - New session, close, switch between sessions
+- **Keyboard shortcuts** - New session, close, switch, voice toggle (Ctrl+Shift+R)
 - **Configurable** - Shell, args, repo paths, agents, and bots via `~/.agentscommander/settings.json`
 
 ## Platform Support
