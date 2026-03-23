@@ -31,10 +31,14 @@ struct GeminiPart {
 pub async fn voice_transcribe(
     settings: State<'_, SettingsState>,
     audio: Vec<u8>,
+    mime_type: String,
 ) -> Result<String, String> {
     let cfg = settings.read().await;
     let api_key = cfg.gemini_api_key.clone();
+    let model = cfg.gemini_model.clone();
     drop(cfg);
+
+    let model = if model.is_empty() { "gemini-2.5-flash".to_string() } else { model };
 
     if api_key.is_empty() {
         return Err("Gemini API key not configured".to_string());
@@ -52,7 +56,7 @@ pub async fn voice_transcribe(
                 { "text": "Transcribe this audio exactly as spoken. Return only the transcribed text, nothing else." },
                 {
                     "inlineData": {
-                        "mimeType": "audio/webm",
+                        "mimeType": mime_type,
                         "data": audio_b64
                     }
                 }
@@ -66,8 +70,8 @@ pub async fn voice_transcribe(
         .map_err(|e| e.to_string())?;
 
     let url = format!(
-        "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key={}",
-        api_key
+        "https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent?key={}",
+        model, api_key
     );
 
     let resp = client
@@ -80,7 +84,15 @@ pub async fn voice_transcribe(
     let status = resp.status();
     if !status.is_success() {
         let error_body = resp.text().await.unwrap_or_default();
-        return Err(format!("Gemini API error ({}): {}", status, error_body));
+        let msg = if status.as_u16() == 429 {
+            "Rate limit exceeded - try again in a few seconds".to_string()
+        } else if status.as_u16() == 403 {
+            "Invalid API key or access denied".to_string()
+        } else {
+            format!("Gemini API error ({}): {}", status, error_body)
+        };
+        log::warn!("Gemini API {} - {}", status, error_body);
+        return Err(msg);
     }
 
     let gemini_resp: GeminiResponse = resp

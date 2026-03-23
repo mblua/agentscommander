@@ -110,4 +110,5 @@ export interface AppSettings {
   raiseTerminalOnClick: boolean;
   voiceToTextEnabled: boolean;
   geminiApiKey: string;
+  geminiModel: string;
 }

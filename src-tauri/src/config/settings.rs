@@ -40,10 +40,17 @@ pub struct AppSettings {
     /// Gemini API key for voice transcription
     #[serde(default)]
     pub gemini_api_key: String,
+    /// Gemini model for voice transcription
+    #[serde(default = "default_gemini_model")]
+    pub gemini_model: String,
 }
 
 fn default_true() -> bool {
     true
+}
+
+fn default_gemini_model() -> String {
+    "gemini-2.5-flash".to_string()
 }
 
 impl Default for AppSettings {
@@ -72,6 +79,7 @@ impl Default for AppSettings {
             raise_terminal_on_click: true,
             voice_to_text_enabled: false,
             gemini_api_key: String::new(),
+            gemini_model: default_gemini_model(),
         }
     }
 }

@@ -4,6 +4,14 @@ import type { AppSettings, AgentConfig, TelegramBotConfig } from "../../shared/t
 import { SettingsAPI, TelegramAPI } from "../../shared/ipc";
 import { settingsStore } from "../stores/settings";
 
+const GEMINI_MODELS = [
+  { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (recommended)" },
+  { id: "gemini-2.5-pro", label: "Gemini 2.5 Pro" },
+  { id: "gemini-2.0-flash", label: "Gemini 2.0 Flash" },
+  { id: "gemini-1.5-flash", label: "Gemini 1.5 Flash" },
+  { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
+];
+
 const AGENT_PRESETS: Record<string, Omit<AgentConfig, "id">> = {
   claude: {
     label: "Claude Code",
@@ -269,6 +277,22 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
                     }
                     placeholder="AIza..."
                   />
+                </label>
+                <label class="settings-field">
+                  <span class="settings-label">Gemini Model</span>
+                  <select
+                    class="settings-input"
+                    value={settings()!.geminiModel}
+                    onChange={(e) =>
+                      updateField("geminiModel", e.currentTarget.value)
+                    }
+                  >
+                    <For each={GEMINI_MODELS}>
+                      {(m) => (
+                        <option value={m.id}>{m.label}</option>
+                      )}
+                    </For>
+                  </select>
                 </label>
               </Show>
             </div>
