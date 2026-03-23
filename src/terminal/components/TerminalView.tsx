@@ -13,9 +13,58 @@ const TerminalView: Component = () => {
   let fitAddon: FitAddon | null = null;
   let unlistenPtyOutput: UnlistenFn | null = null;
   let resizeObserver: ResizeObserver | null = null;
+  let currentSessionId: string | null = null;
   let inputBuffer = "";
 
-  const initTerminal = () => {
+  const updateSize = () => {
+    if (terminal) {
+      terminalStore.setTermSize(terminal.cols, terminal.rows);
+    }
+  };
+
+  const syncViewport = (sessionId: string) => {
+    if (!terminal || !fitAddon) {
+      return;
+    }
+
+    fitAddon.fit();
+    terminal.scrollToBottom();
+    terminal.refresh(0, Math.max(terminal.rows - 1, 0));
+    updateSize();
+    void PtyAPI.resize(sessionId, terminal.cols, terminal.rows);
+  };
+
+  const scheduleViewportSync = (sessionId: string) => {
+    requestAnimationFrame(() => {
+      if (sessionId !== terminalStore.activeSessionId) {
+        return;
+      }
+
+      syncViewport(sessionId);
+
+      requestAnimationFrame(() => {
+        if (sessionId === terminalStore.activeSessionId) {
+          syncViewport(sessionId);
+        }
+      });
+    });
+  };
+
+  const disposeTerminal = () => {
+    resizeObserver?.disconnect();
+    resizeObserver = null;
+    terminal?.dispose();
+    terminal = null;
+    fitAddon = null;
+    inputBuffer = "";
+    currentSessionId = null;
+
+    if (containerRef) {
+      containerRef.replaceChildren();
+    }
+  };
+
+  const initTerminal = (sessionId: string) => {
     terminal = new Terminal({
       fontFamily: "'Cascadia Code', 'JetBrains Mono', 'Fira Code', monospace",
       fontSize: 14,
@@ -50,10 +99,8 @@ const TerminalView: Component = () => {
 
     fitAddon = new FitAddon();
     terminal.loadAddon(fitAddon);
-
     terminal.open(containerRef);
 
-    // Try WebGL addon, fall back silently
     try {
       const webglAddon = new WebglAddon();
       webglAddon.onContextLoss(() => {
@@ -61,66 +108,51 @@ const TerminalView: Component = () => {
       });
       terminal.loadAddon(webglAddon);
     } catch {
-      // Canvas renderer fallback — automatic
+      // Canvas renderer fallback is automatic.
     }
 
-    fitAddon.fit();
-    updateSize();
+    syncViewport(sessionId);
 
-    // Handle user input → PTY write + track last prompt
     terminal.onData((data) => {
-      const sessionId = terminalStore.activeSessionId;
-      if (sessionId) {
+      const activeSessionId = terminalStore.activeSessionId;
+      if (activeSessionId) {
         const encoder = new TextEncoder();
-        PtyAPI.write(sessionId, encoder.encode(data));
+        void PtyAPI.write(activeSessionId, encoder.encode(data));
       }
 
-      // Track input for last-prompt display
       if (data === "\r") {
         const trimmed = inputBuffer.trim();
-        if (trimmed && sessionId) {
-          SessionAPI.setLastPrompt(sessionId, trimmed);
+        if (trimmed && activeSessionId) {
+          void SessionAPI.setLastPrompt(activeSessionId, trimmed);
         }
         inputBuffer = "";
       } else if (data === "\x7f") {
-        // Backspace
         inputBuffer = inputBuffer.slice(0, -1);
       } else if (data.length === 1 && data >= " ") {
         inputBuffer += data;
       } else if (data.length > 1 && !data.startsWith("\x1b")) {
-        // Pasted text
         inputBuffer += data;
       }
     });
 
-    // Handle resize
     terminal.onResize(({ cols, rows }) => {
-      const sessionId = terminalStore.activeSessionId;
-      if (sessionId) {
-        PtyAPI.resize(sessionId, cols, rows);
+      const activeSessionId = terminalStore.activeSessionId;
+      if (activeSessionId) {
+        void PtyAPI.resize(activeSessionId, cols, rows);
       }
       terminalStore.setTermSize(cols, rows);
     });
 
-    // Observe container resize
     resizeObserver = new ResizeObserver(() => {
-      if (fitAddon) {
-        fitAddon.fit();
+      const activeSessionId = terminalStore.activeSessionId;
+      if (activeSessionId) {
+        syncViewport(activeSessionId);
       }
     });
     resizeObserver.observe(containerRef);
   };
 
-  const updateSize = () => {
-    if (terminal) {
-      terminalStore.setTermSize(terminal.cols, terminal.rows);
-    }
-  };
-
   onMount(async () => {
-    initTerminal();
-
-    // Listen for PTY output
     unlistenPtyOutput = await onPtyOutput(({ sessionId, data }) => {
       if (sessionId === terminalStore.activeSessionId && terminal) {
         terminal.write(new Uint8Array(data));
@@ -128,21 +160,25 @@ const TerminalView: Component = () => {
     });
   });
 
-  // When the active session changes, clear terminal and resize PTY
   createEffect(() => {
     const sessionId = terminalStore.activeSessionId;
-    if (sessionId && terminal && fitAddon) {
-      terminal.clear();
-      fitAddon.fit();
-      // Send resize to new session PTY
-      PtyAPI.resize(sessionId, terminal.cols, terminal.rows);
+    if (!sessionId) {
+      disposeTerminal();
+      return;
     }
+
+    if (sessionId !== currentSessionId) {
+      disposeTerminal();
+      initTerminal(sessionId);
+      currentSessionId = sessionId;
+    }
+
+    scheduleViewportSync(sessionId);
   });
 
   onCleanup(() => {
     unlistenPtyOutput?.();
-    resizeObserver?.disconnect();
-    terminal?.dispose();
+    disposeTerminal();
   });
 
   return <div class="terminal-container" ref={containerRef!} />;
