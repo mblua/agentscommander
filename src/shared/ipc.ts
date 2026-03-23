@@ -28,6 +28,9 @@ export const SessionAPI = {
   list: () => invoke<Session[]>("list_sessions"),
 
   getActive: () => invoke<string | null>("get_active_session"),
+
+  setLastPrompt: (id: string, text: string) =>
+    invoke<void>("set_last_prompt", { id, text }),
 };
 
 export const PtyAPI = {
@@ -112,6 +115,15 @@ export const TelegramAPI = {
   sendTest: (token: string) =>
     invoke<number>("telegram_send_test", { token }),
 };
+
+export function onSessionGitBranch(
+  callback: (data: { sessionId: string; branch: string | null }) => void
+): Promise<UnlistenFn> {
+  return listen<{ sessionId: string; branch: string | null }>(
+    "session_git_branch",
+    (e) => callback(e.payload)
+  );
+}
 
 export function onSessionIdle(
   callback: (data: { id: string }) => void

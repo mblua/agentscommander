@@ -44,6 +44,8 @@ impl SessionManager {
             working_directory,
             status: SessionStatus::Running,
             waiting_for_input: false,
+            last_prompt: None,
+            git_branch: None,
         };
 
         self.sessions.write().await.insert(id, session.clone());
@@ -157,5 +159,27 @@ impl SessionManager {
         if let Some(s) = sessions.get_mut(&id) {
             s.waiting_for_input = false;
         }
+    }
+
+    pub async fn set_last_prompt(&self, id: Uuid, prompt: String) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.last_prompt = Some(prompt);
+        }
+    }
+
+    pub async fn set_git_branch(&self, id: Uuid, branch: Option<String>) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.git_branch = branch;
+        }
+    }
+
+    pub async fn get_sessions_directories(&self) -> Vec<(Uuid, String)> {
+        let sessions = self.sessions.read().await;
+        sessions
+            .iter()
+            .map(|(id, s)| (*id, s.working_directory.clone()))
+            .collect()
     }
 }

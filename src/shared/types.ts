@@ -7,6 +7,8 @@ export interface Session {
   workingDirectory: string;
   status: SessionStatus;
   waitingForInput: boolean;
+  lastPrompt: string | null;
+  gitBranch: string | null;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
@@ -70,7 +72,6 @@ export interface AgentConfig {
   id: string;
   label: string;
   command: string;
-  args: string[];
   color: string;
   gitPullBefore: boolean;
 }

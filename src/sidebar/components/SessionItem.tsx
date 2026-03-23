@@ -1,6 +1,7 @@
 import { Component, createSignal, Show, For } from "solid-js";
 import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
 import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI } from "../../shared/ipc";
+import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { bridgesStore } from "../stores/bridges";
 
 function statusClass(status: SessionStatus): string {
@@ -44,9 +45,14 @@ const SessionItem: Component<{
     await TelegramAPI.attach(props.session.id, botId);
   };
 
-  const handleClick = () => {
+  const handleClick = async () => {
     if (!editing()) {
-      SessionAPI.switch(props.session.id);
+      await SessionAPI.switch(props.session.id);
+      const detachedLabel = `terminal-${props.session.id.replace(/-/g, "")}`;
+      const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
+      if (!detachedWin) {
+        (await WebviewWindow.getByLabel("terminal"))?.setFocus();
+      }
     }
   };
 
@@ -120,6 +126,11 @@ const SessionItem: Component<{
             maxLength={50}
             onClick={(e) => e.stopPropagation()}
           />
+        </Show>
+        <Show when={props.session.gitBranch}>
+          <div class="session-item-branch" title={props.session.gitBranch!}>
+            {props.session.gitBranch}
+          </div>
         </Show>
         <div class="session-item-shell">{props.session.shell}</div>
       </div>
