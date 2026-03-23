@@ -264,6 +264,12 @@ npx tsc --noEmit               # TypeScript check
 
 ---
 
+## Memory Storage
+
+**NUNCA guardar memoria en `~/.claude/projects/...`**. Toda la memoria de Claude debe almacenarse localmente en el proyecto, en `.claude/memory/`. Esto permite que la memoria viaje con el repo y sea accesible desde cualquier clon/worktree.
+
+---
+
 <!-- rtk-instructions -->
 ## RTK (Token Optimizer)
 
