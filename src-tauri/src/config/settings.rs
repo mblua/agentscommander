@@ -46,10 +46,7 @@ impl Default for AppSettings {
             (
                 "powershell.exe".to_string(),
                 vec!["-NoLogo".to_string()],
-                vec![
-                    r"C:\Users\maria\0_repos".to_string(),
-                    r"C:\Users\maria\0_repos_phi".to_string(),
-                ],
+                vec![],
             )
         } else {
             (
