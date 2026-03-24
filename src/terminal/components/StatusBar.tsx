@@ -32,6 +32,13 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
     }
   };
 
+  const handleCancelRecording = (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    cleanup();
+    voiceRecorder.cancel();
+  };
+
   onCleanup(cleanup);
 
   const handleClearInput = () => {
@@ -81,6 +88,15 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
       <Show when={terminalStore.activeSessionId}>
         <div class="status-bar-actions">
           <Show when={settingsStore.voiceEnabled}>
+            <Show when={isRecording()}>
+              <button
+                class="status-bar-btn status-bar-btn-mic-cancel"
+                onClick={handleCancelRecording}
+                title="Cancel recording"
+              >
+                &#x2715;
+              </button>
+            </Show>
             <button
               class={`status-bar-btn status-bar-btn-mic ${isRecording() ? "recording" : ""} ${isProcessing() ? "processing" : ""}`}
               onMouseDown={handleMicDown}

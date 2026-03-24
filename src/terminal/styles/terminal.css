@@ -320,6 +320,16 @@ html, body, #root {
   opacity: 0.5;
 }
 
+.status-bar-btn-mic-cancel {
+  color: rgba(255, 68, 68, 0.6);
+  font-size: 10px;
+}
+
+.status-bar-btn-mic-cancel:hover {
+  color: #ff4444;
+  background: rgba(255, 68, 68, 0.15);
+}
+
 .status-bar-btn-clear:hover {
   color: #ffaa00;
 }
