@@ -32,6 +32,13 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
     }
   };
 
+  const handleCancelRecording = (e: MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    cleanup();
+    voiceRecorder.cancel();
+  };
+
   onCleanup(cleanup);
 
   const handleClearInput = () => {
@@ -89,6 +96,15 @@ const StatusBar: Component<{ detached?: boolean }> = (props) => {
             >
               &#x1F399;
             </button>
+            <Show when={isRecording()}>
+              <button
+                class="status-bar-btn status-bar-btn-mic-cancel"
+                onClick={handleCancelRecording}
+                title="Cancel recording"
+              >
+                &#x2715;
+              </button>
+            </Show>
           </Show>
           <button
             class="status-bar-btn status-bar-btn-clear"
