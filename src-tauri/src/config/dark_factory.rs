@@ -34,9 +34,9 @@ pub struct AgentLocalConfig {
     pub is_coordinator_of: Vec<String>,
 }
 
-/// Returns ~/.agentscommander/
+/// Returns the app config dir (delegates to config::config_dir)
 fn dark_factory_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agentscommander"))
+    super::config_dir()
 }
 
 /// Returns ~/.agentscommander/teams.json

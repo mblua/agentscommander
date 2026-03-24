@@ -14,15 +14,13 @@ import { SettingsAPI, TelegramAPI, DarkFactoryAPI, ReposAPI } from "../../shared
 const AGENT_PRESETS: Record<string, Omit<AgentConfig, "id">> = {
   claude: {
     label: "Claude Code",
-    command: "claude",
-    args: ["--dangerously-skip-permissions"],
+    command: "claude --dangerously-skip-permissions",
     color: "#d97706",
     gitPullBefore: true,
   },
   codex: {
     label: "Codex",
     command: "codex",
-    args: [],
     color: "#10b981",
     gitPullBefore: true,
   },
@@ -121,7 +119,6 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           id: newId(),
           label: "",
           command: "",
-          args: [],
           color: "#6366f1",
           gitPullBefore: false,
         };
@@ -427,21 +424,6 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
                   updateAgent(i(), "command", e.currentTarget.value)
                 }
                 placeholder="agent-cli"
-              />
-            </label>
-            <label class="settings-field">
-              <span class="settings-label">Arguments</span>
-              <input
-                class="settings-input"
-                value={agent.args.join(" ")}
-                onInput={(e) =>
-                  updateAgent(
-                    i(),
-                    "args",
-                    e.currentTarget.value.split(" ").filter(Boolean)
-                  )
-                }
-                placeholder="--flag value"
               />
             </label>
             <label class="settings-field">

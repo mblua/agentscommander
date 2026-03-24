@@ -1,4 +1,4 @@
-# SummonGate
+# Agents Commander
 
 A standalone Windows terminal session manager with decoupled tabs. Two synchronized windows work together: a narrow **Sidebar** for managing sessions, and a full **Terminal** window rendering the active PTY via xterm.js.
 
@@ -16,7 +16,7 @@ Built with **Tauri 2.x** (Rust) + **SolidJS** (TypeScript) + **xterm.js** (WebGL
 - **Telegram bridge** - Attach a Telegram bot to a session for remote monitoring
 - **Custom titlebar** - Frameless windows with draggable titlebar, no native decorations
 - **Keyboard shortcuts** - New session, close, switch between sessions
-- **Configurable** - Shell, args, repo paths, agents, and bots via `~/.summongate/settings.json`
+- **Configurable** - Shell, args, repo paths, agents, and bots via `~/.agentscommander/settings.json`
 
 ## Design Principles
 
@@ -79,7 +79,7 @@ cd src-tauri && cargo test
 npm run tauri build
 ```
 
-The production binary is at `src-tauri/target/release/summongate.exe`. Run it directly - do not use the NSIS/MSI installers for local testing.
+The production binary is at `src-tauri/target/release/agentscommander.exe`. Run it directly - do not use the NSIS/MSI installers for local testing.
 
 ## Releases
 
@@ -94,7 +94,7 @@ This creates a draft release with installers for Windows, macOS (ARM + Intel), a
 
 ## Configuration
 
-Settings are stored in `~/.summongate/settings.json`:
+Settings are stored in `~/.agentscommander/settings.json`:
 
 ```json
 {
@@ -133,7 +133,7 @@ Both windows share the same frontend bundle, differentiated by query param (`?wi
 ## Project Structure
 
 ```
-summongate/
+agentscommander/
 ├── src-tauri/src/
 │   ├── lib.rs               # App setup, multi-window creation
 │   ├── commands/             # Tauri IPC handlers (session, pty, config, window, telegram)
@@ -163,4 +163,4 @@ Version is kept in sync across three files:
 
 ## License
 
-Private project.
+[MIT](LICENSE)

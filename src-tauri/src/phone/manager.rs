@@ -3,9 +3,9 @@ use std::path::{Path, PathBuf};
 use crate::config::dark_factory::{DarkFactoryConfig, Team};
 use super::types::{AgentInfo, Conversation, PhoneMessage};
 
-/// Returns ~/.agentscommander/conversations/
+/// Returns <config_dir>/conversations/
 fn conversations_dir() -> Option<PathBuf> {
-    dirs::home_dir().map(|h| h.join(".agentscommander").join("conversations"))
+    crate::config::config_dir().map(|d| d.join("conversations"))
 }
 
 /// Check if two agents can communicate based on team routing rules
