@@ -13,10 +13,14 @@ Built with **Tauri 2.x** (Rust) + **SolidJS** (TypeScript) + **xterm.js** (WebGL
 - **Detached windows** - Pop a session out into its own dedicated terminal window
 - **Idle detection** - Visual indicator (green dot) when a session is idle vs busy
 - **Agent launcher** - Open pre-configured CLI agents (Claude Code, etc.) from the toolbar
-- **Voice-to-text** - Dictate into any session via Gemini transcription (push-to-talk in terminal, toggle in sidebar)
+- **Voice-to-text** - Dictate into any session via Gemini transcription (push-to-talk in terminal, toggle in sidebar) with configurable auto-execute and cancel recording support
 - **Clear agent input** - One-click button to clear the coding agent's input line (Ctrl+U)
+- **Team filter** - Filter sessions by team in the sidebar dropdown
 - **Telegram bridge** - Attach a Telegram bot to a session for remote monitoring
+- **Settings UI** - Tabbed settings modal (General, Coding Agents, Integrations, Dark Factory) accessible from the top bar
 - **Custom titlebar** - Frameless windows with draggable titlebar, no native decorations
+- **Zoom support** - Ctrl+Scroll, Ctrl++/-, Ctrl+0 on any window, with per-window zoom level persistence
+- **Window geometry persistence** - Windows reopen at the same position and size as when you last closed the app
 - **Keyboard shortcuts** - New session, close, switch, voice toggle (Ctrl+Shift+R)
 - **Configurable** - Shell, args, repo paths, agents, and bots via `~/.agentscommander/settings.json`
 
@@ -96,11 +100,11 @@ The production binary is at `src-tauri/target/release/agentscommander` (`.exe` o
 Releases are automated via GitHub Actions. Push a tag to trigger a build:
 
 ```bash
-git tag v0.4.0
-git push origin v0.4.0
+git tag v0.4.9
+git push origin v0.4.9
 ```
 
-This creates a draft release with installers for Windows, macOS (ARM + Intel), and Ubuntu.
+This creates a draft release with auto-generated changelog and installers for Windows, macOS (ARM + Intel), and Ubuntu.
 
 ## Configuration
 
@@ -112,18 +116,27 @@ On Windows the default shell is `powershell.exe`; on Linux/macOS it is `/bin/bas
 {
   "defaultShell": "powershell.exe",
   "defaultShellArgs": ["-NoLogo"],
-  "repoPaths": [],
+  "repoPaths": ["C:/repos"],
   "agents": [
     {
       "id": "claude",
       "label": "Claude Code",
       "command": "claude",
-      "args": [],
-      "color": "#E87B35"
+      "color": "#E87B35",
+      "gitPullBefore": false
     }
   ],
   "sidebarAlwaysOnTop": true,
-  "raiseTerminalOnClick": true
+  "raiseTerminalOnClick": true,
+  "voiceToTextEnabled": false,
+  "geminiApiKey": "",
+  "geminiModel": "gemini-2.5-flash",
+  "voiceAutoExecute": true,
+  "voiceAutoExecuteDelay": 15,
+  "sidebarZoom": 1.0,
+  "terminalZoom": 1.0,
+  "sidebarGeometry": null,
+  "terminalGeometry": null
 }
 ```
 
@@ -166,7 +179,7 @@ agentscommander/
 
 ## Version
 
-Current: **0.4.0**
+Current: **0.4.8**
 
 Version is kept in sync across three files:
 - `src-tauri/tauri.conf.json`
