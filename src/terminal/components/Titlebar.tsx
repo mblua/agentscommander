@@ -1,7 +1,7 @@
 import { Component, Show } from "solid-js";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { terminalStore } from "../stores/terminal";
-
+import iconUrl from "../../assets/icon-16.png";
 declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
 
@@ -20,12 +20,11 @@ const Titlebar: Component<{ detached?: boolean }> = (props) => {
 
   return (
     <div class="titlebar" data-tauri-drag-region>
-      <div class="titlebar-title" data-tauri-drag-region>
-        {import.meta.env.DEV && (
-          <span class="titlebar-dev-badge" data-tauri-drag-region>
-            DEV {APP_VERSION}
-          </span>
-        )}
+      <div class="titlebar-brand" data-tauri-drag-region>
+        <img src={iconUrl} class="titlebar-icon" alt="" draggable={false} />
+        <span class="titlebar-title" data-tauri-drag-region>
+          agents commander
+        </span>
         <Show when={props.detached}>
           <span class="titlebar-detached-badge">DETACHED</span>
         </Show>
@@ -40,6 +39,11 @@ const Titlebar: Component<{ detached?: boolean }> = (props) => {
             <span> ({terminalStore.activeShell})</span>
           </Show>
         </Show>
+        {import.meta.env.DEV && (
+          <span class="titlebar-dev-badge" data-tauri-drag-region>
+            DEV {APP_VERSION}
+          </span>
+        )}
       </div>
       <div class="titlebar-controls">
         <button class="titlebar-btn" onClick={handleMinimize} title="Minimize">
