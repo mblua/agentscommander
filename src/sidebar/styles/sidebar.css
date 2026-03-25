@@ -931,6 +931,31 @@ html, body, #root {
   color: #f59e0b;
 }
 
+.session-item-explorer {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.session-item:hover .session-item-explorer {
+  display: flex;
+}
+
+.session-item-explorer:hover {
+  background: rgba(255, 196, 0, 0.15);
+  color: #ffc400;
+}
+
 .session-item-detach {
   display: none;
   align-items: center;
