@@ -241,6 +241,12 @@ html, body, #root {
   color: #ffffff;
 }
 
+/* Extended name: dim the parent/prefix, highlight the repo name */
+.name-prefix {
+  opacity: 0.4;
+  font-weight: 400;
+}
+
 /* Inline rename input */
 .session-item-rename-input {
   width: 100%;

@@ -136,7 +136,14 @@ const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
                 &#x2190;
               </button>
               <span class="agent-modal-title">
-                Select agent for <strong>{selectedRepo()!.name}</strong>
+                Select agent for <strong>
+                  {selectedRepo()!.name.includes("/") ? (
+                    <>
+                      <span class="name-prefix">{selectedRepo()!.name.slice(0, selectedRepo()!.name.lastIndexOf("/") + 1)}</span>
+                      {selectedRepo()!.name.slice(selectedRepo()!.name.lastIndexOf("/") + 1)}
+                    </>
+                  ) : selectedRepo()!.name}
+                </strong>
               </span>
             </div>
           }
@@ -200,7 +207,14 @@ const OpenAgentModal: Component<{ onClose: () => void }> = (props) => {
                   >
                     <div class="agent-modal-item-icon">&#x1F4C1;</div>
                     <div class="agent-modal-item-info">
-                      <div class="agent-modal-item-name">{repo.name}</div>
+                      <div class="agent-modal-item-name">
+                        {repo.name.includes("/") ? (
+                          <>
+                            <span class="name-prefix">{repo.name.slice(0, repo.name.lastIndexOf("/") + 1)}</span>
+                            {repo.name.slice(repo.name.lastIndexOf("/") + 1)}
+                          </>
+                        ) : repo.name}
+                      </div>
                       <div class="agent-modal-item-badges">
                         <For each={repo.agents}>
                           {(agent) => (

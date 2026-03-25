@@ -139,7 +139,12 @@ const SessionItem: Component<{
           when={editing()}
           fallback={
             <div class="session-item-name" onDblClick={handleDoubleClick}>
-              {props.session.name}
+              {props.session.name.includes("/") ? (
+                <>
+                  <span class="name-prefix">{props.session.name.slice(0, props.session.name.lastIndexOf("/") + 1)}</span>
+                  {props.session.name.slice(props.session.name.lastIndexOf("/") + 1)}
+                </>
+              ) : props.session.name}
             </div>
           }
         >
