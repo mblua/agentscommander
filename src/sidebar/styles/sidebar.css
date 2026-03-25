@@ -137,9 +137,12 @@ html, body, #root {
   flex: 1;
 }
 
-.team-filter .toolbar-gear-btn {
-  flex-shrink: 0;
+.team-filter-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
+  flex-shrink: 0;
 }
 
 .team-filter-wrapper {
