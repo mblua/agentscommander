@@ -271,6 +271,11 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
     settingsStore.refresh();
     // Refresh teams in sidebar dropdown immediately
     sessionsStore.setTeams([...dfConfig.teams]);
+    // Refresh repos (repo_paths may have changed)
+    try {
+      const allRepos = await ReposAPI.search("");
+      sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
+    } catch {}
     setSaving(false);
     props.onClose();
   };
