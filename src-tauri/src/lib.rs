@@ -24,6 +24,11 @@ pub type DetachedSessionsState = Arc<Mutex<HashSet<uuid::Uuid>>>;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Initialize logging — RUST_LOG defaults to info for our crate
+    env_logger::Builder::from_env(
+        env_logger::Env::default().default_filter_or("agentscommander=info")
+    ).init();
+
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
 
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
@@ -39,11 +44,23 @@ pub fn run() {
         move |id| {
             if let Some(app) = handle_for_idle.get() {
                 let _ = tauri::Emitter::emit(app, "session_idle", serde_json::json!({ "id": id.to_string() }));
+                // Update SessionManager.waiting_for_input for mailbox delivery
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr_clone = session_mgr.inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    mgr_clone.read().await.mark_idle(id).await;
+                });
             }
         },
         move |id| {
             if let Some(app) = handle_for_busy.get() {
                 let _ = tauri::Emitter::emit(app, "session_busy", serde_json::json!({ "id": id.to_string() }));
+                // Update SessionManager.waiting_for_input for mailbox delivery
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr_clone = session_mgr.inner().clone();
+                tauri::async_runtime::spawn(async move {
+                    mgr_clone.read().await.mark_busy(id).await;
+                });
             }
         },
     );

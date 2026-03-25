@@ -120,6 +120,11 @@ impl MailboxPoller {
         let msg: OutboxMessage = serde_json::from_str(&content)
             .map_err(|e| format!("Failed to parse outbox message: {}", e))?;
 
+        log::info!(
+            "[mailbox] Processing message {} from='{}' to='{}' mode='{}'",
+            msg.id, msg.from, msg.to, msg.mode
+        );
+
         // Validate token if present
         if let Some(ref token_str) = msg.token {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -160,6 +165,7 @@ impl MailboxPoller {
 
     /// Deliver mode: queue — write to destination's inbox directory.
     async fn deliver_queue(&self, app: &tauri::AppHandle, msg: &OutboxMessage) -> Result<(), String> {
+        log::info!("[mailbox] Delivering {} via QUEUE to {}", msg.id, msg.to);
         let dest_inbox = self.resolve_inbox_dir(&msg.to, app).await?;
         std::fs::create_dir_all(&dest_inbox)
             .map_err(|e| format!("Failed to create inbox dir: {}", e))?;
@@ -192,11 +198,16 @@ impl MailboxPoller {
             let sessions = mgr.list_sessions().await;
             let session = sessions.iter().find(|s| s.id == session_id.to_string());
 
-            // Only deliver if session is active/running and NOT waiting for input
             if let Some(s) = session {
+                log::info!(
+                    "[mailbox] active-only: session {} status={:?} waiting_for_input={}",
+                    session_id, s.status, s.waiting_for_input
+                );
+                // Only deliver if session is active/running and NOT waiting for input
                 if !s.waiting_for_input && matches!(s.status, SessionStatus::Active | SessionStatus::Running) {
                     return self.inject_into_pty(app, session_id, msg).await;
                 }
+                log::info!("[mailbox] active-only: conditions not met, falling back to queue");
             }
         }
         // Fallback to queue
@@ -212,9 +223,16 @@ impl MailboxPoller {
             let session = sessions.iter().find(|s| s.id == session_id.to_string());
 
             if let Some(s) = session {
+                log::info!(
+                    "[mailbox] wake: session {} status={:?} waiting_for_input={}",
+                    session_id, s.status, s.waiting_for_input
+                );
                 if s.waiting_for_input {
                     return self.inject_into_pty(app, session_id, msg).await;
                 }
+                log::info!("[mailbox] wake: session not idle, falling back to queue");
+            } else {
+                log::warn!("[mailbox] wake: session {} not in list_sessions", session_id);
             }
         }
         // Fallback to queue
@@ -402,14 +420,23 @@ impl MailboxPoller {
         let mgr = session_mgr.read().await;
         let dirs = mgr.get_sessions_directories().await;
 
+        log::info!(
+            "[mailbox] find_active_session for '{}' — {} sessions: {:?}",
+            agent_name,
+            dirs.len(),
+            dirs.iter().map(|(id, cwd)| format!("{}={}", id, cwd)).collect::<Vec<_>>()
+        );
+
         for (id, cwd) in &dirs {
             let normalized = cwd.replace('\\', "/");
             if normalized.ends_with(agent_name)
                 || normalized.contains(&format!("/{}", agent_name))
             {
+                log::info!("[mailbox] Matched session {} (cwd={})", id, cwd);
                 return Some(*id);
             }
         }
+        log::warn!("[mailbox] No session matched for '{}'", agent_name);
         None
     }
 
