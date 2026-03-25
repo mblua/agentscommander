@@ -1,11 +1,12 @@
 import { Component, createSignal, Show, For } from "solid-js";
-import type { Session, SessionStatus, TelegramBotConfig } from "../../shared/types";
+import type { Session, SessionStatus, TelegramBotConfig, RepoMatch } from "../../shared/types";
 import { SessionAPI, TelegramAPI, SettingsAPI, WindowAPI } from "../../shared/ipc";
 import { WebviewWindow } from "@tauri-apps/api/webviewWindow";
 import { bridgesStore } from "../stores/bridges";
 import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
+import OpenAgentModal from "./OpenAgentModal";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -35,11 +36,9 @@ const SessionItem: Component<{
   session: Session;
   isActive: boolean;
 }> = (props) => {
-  const [editing, setEditing] = createSignal(false);
-  const [editValue, setEditValue] = createSignal("");
   const [showBotMenu, setShowBotMenu] = createSignal(false);
+  const [showAgentModal, setShowAgentModal] = createSignal(false);
   const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
-  let inputRef!: HTMLInputElement;
 
   const bridge = () => bridgesStore.getBridge(props.session.id);
   const agentBadges = () => {
@@ -91,46 +90,25 @@ const SessionItem: Component<{
   };
 
   const handleClick = async () => {
-    if (!editing()) {
-      await SessionAPI.switch(props.session.id);
-      const detachedLabel = `terminal-${props.session.id.replace(/-/g, "")}`;
-      const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
-      if (!detachedWin) {
-        (await WebviewWindow.getByLabel("terminal"))?.setFocus();
-      }
+    await SessionAPI.switch(props.session.id);
+    const detachedLabel = `terminal-${props.session.id.replace(/-/g, "")}`;
+    const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
+    if (!detachedWin) {
+      (await WebviewWindow.getByLabel("terminal"))?.setFocus();
     }
   };
 
   const handleDoubleClick = (e: MouseEvent) => {
     e.stopPropagation();
-    setEditValue(props.session.name);
-    setEditing(true);
-    requestAnimationFrame(() => {
-      inputRef?.focus();
-      inputRef?.select();
-    });
+    setShowAgentModal(true);
   };
 
-  const confirmRename = () => {
-    const val = editValue().trim();
-    if (val && val !== props.session.name) {
-      SessionAPI.rename(props.session.id, val);
-    }
-    setEditing(false);
-  };
-
-  const cancelRename = () => {
-    setEditing(false);
-  };
-
-  const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      confirmRename();
-    } else if (e.key === "Escape") {
-      e.preventDefault();
-      cancelRename();
-    }
+  const repoForModal = (): RepoMatch => {
+    const np = props.session.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
+    const repo = sessionsStore.repos.find((r) =>
+      r.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") === np
+    );
+    return repo ?? { name: props.session.name, path: props.session.workingDirectory, agents: [] };
   };
 
   const handleOpenExplorer = async (e: MouseEvent) => {
@@ -164,30 +142,14 @@ const SessionItem: Component<{
         class={`session-item-status ${isInactive() ? "offline" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
       />
       <div class="session-item-info">
-        <Show
-          when={editing()}
-          fallback={
-            <div class="session-item-name" onDblClick={handleDoubleClick}>
-              {props.session.name.includes("/") ? (
-                <>
-                  <span class="name-prefix">{props.session.name.slice(0, props.session.name.lastIndexOf("/") + 1)}</span>
-                  {props.session.name.slice(props.session.name.lastIndexOf("/") + 1)}
-                </>
-              ) : props.session.name}
-            </div>
-          }
-        >
-          <input
-            ref={inputRef!}
-            class="session-item-rename-input"
-            value={editValue()}
-            onInput={(e) => setEditValue(e.currentTarget.value)}
-            onKeyDown={handleKeyDown}
-            onBlur={confirmRename}
-            maxLength={50}
-            onClick={(e) => e.stopPropagation()}
-          />
-        </Show>
+        <div class="session-item-name" onDblClick={handleDoubleClick}>
+          {props.session.name.includes("/") ? (
+            <>
+              <span class="name-prefix">{props.session.name.slice(0, props.session.name.lastIndexOf("/") + 1)}</span>
+              {props.session.name.slice(props.session.name.lastIndexOf("/") + 1)}
+            </>
+          ) : props.session.name}
+        </div>
 
         <Show when={isRecording()}>
           <div class="session-item-voice-indicator recording">
@@ -314,6 +276,12 @@ const SessionItem: Component<{
           &#x2715;
         </button>
       </Show>
+      {showAgentModal() && (
+        <OpenAgentModal
+          initialRepo={repoForModal()}
+          onClose={() => setShowAgentModal(false)}
+        />
+      )}
     </div>
   );
 };
