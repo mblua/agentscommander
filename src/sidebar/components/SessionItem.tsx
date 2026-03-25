@@ -216,7 +216,7 @@ const SessionItem: Component<{
             <div class="session-item-agent-badges">
               <For each={agentBadges()}>
                 {(agent) => (
-                  <span class="agent-badge">{AGENT_BADGES[agent] || agent}</span>
+                  <span class="agent-badge" data-agent={agent}>{AGENT_BADGES[agent] || agent}</span>
                 )}
               </For>
             </div>

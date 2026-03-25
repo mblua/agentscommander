@@ -66,7 +66,9 @@ const filteredSessionsMemo = createMemo(() => {
 
   // Add inactive repos/members that don't have active sessions
   const activePathSet = new Set(
-    state.sessions.map((s) => normalizePath(s.workingDirectory))
+    state.sessions
+      .filter((s) => s.workingDirectory)
+      .map((s) => normalizePath(s.workingDirectory))
   );
   const addedPaths = new Set<string>();
   const inactiveEntries: Session[] = [];

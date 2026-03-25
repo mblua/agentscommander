@@ -285,8 +285,8 @@ impl MailboxPoller {
                     let session_id = Uuid::parse_str(&info.id)
                         .map_err(|e| format!("Failed to parse session id: {}", e))?;
 
-                    // Wait for agent boot (3s matches init prompt delay)
-                    tokio::time::sleep(std::time::Duration::from_secs(4)).await;
+                    // Wait for agent boot + init prompt injection (init fires at 3s, needs time to process)
+                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
 
                     // Inject the message — non-interactive one-shot, use markers if get_output
                     self.inject_into_pty(app, session_id, msg, false).await?;
