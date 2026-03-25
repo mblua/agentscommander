@@ -117,6 +117,67 @@ html, body, #root {
   color: #10b981;
 }
 
+/* Layout button & dropdown */
+.layout-dropdown-wrapper {
+  position: relative;
+}
+
+.titlebar-btn-layout {
+  font-size: 14px;
+  opacity: 0.5;
+}
+
+.titlebar-btn-layout:hover,
+.titlebar-btn-layout.open {
+  opacity: 1;
+  background: rgba(0, 212, 255, 0.15);
+  color: var(--sidebar-accent);
+}
+
+.layout-dropdown {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  min-width: 160px;
+  background: var(--sidebar-bg);
+  border: 1px solid var(--sidebar-border);
+  border-radius: 4px;
+  padding: 4px 0;
+  z-index: 1000;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  animation: dropdown-in 150ms ease-out;
+}
+
+@keyframes dropdown-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.layout-option {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  border: none;
+  background: transparent;
+  color: var(--titlebar-fg);
+  font-size: 12px;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+  text-align: left;
+}
+
+.layout-option:hover {
+  background: rgba(0, 212, 255, 0.1);
+  color: var(--sidebar-accent);
+}
+
+.layout-option-icon {
+  font-size: 16px;
+  opacity: 0.7;
+}
+
 /* Team Filter */
 .team-filter {
   display: flex;
@@ -134,6 +195,7 @@ html, body, #root {
 
 .team-filter .toolbar-gear-btn {
   flex-shrink: 0;
+  margin-left: auto;
 }
 
 .team-filter-wrapper {
@@ -940,6 +1002,31 @@ html, body, #root {
 .session-item-voice-indicator.error .voice-error-text {
   font-size: 10px;
   color: #f59e0b;
+}
+
+.session-item-explorer {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: transparent;
+  color: var(--sidebar-fg-dim);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+.session-item:hover .session-item-explorer {
+  display: flex;
+}
+
+.session-item-explorer:hover {
+  background: rgba(255, 196, 0, 0.15);
+  color: #ffc400;
 }
 
 .session-item-detach {
