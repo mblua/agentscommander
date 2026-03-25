@@ -212,11 +212,13 @@ const SessionItem: Component<{
         </Show>
 
         <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !voiceRecorder.micError()}>
-          <Show when={isInactive()}>
+          <Show when={agentBadges().length > 0}>
             <div class="session-item-agent-badges">
               <For each={agentBadges()}>
                 {(agent) => (
-                  <span class="agent-badge" data-agent={agent}>{AGENT_BADGES[agent] || agent}</span>
+                  <span class="agent-badge" data-agent={agent}>
+                    {props.isActive ? agent : (AGENT_BADGES[agent] || agent)}
+                  </span>
                 )}
               </For>
             </div>
@@ -227,7 +229,6 @@ const SessionItem: Component<{
                 {props.session.gitBranch}
               </div>
             </Show>
-            <div class="session-item-shell">{props.session.shell}</div>
           </Show>
         </Show>
       </div>
