@@ -82,7 +82,7 @@ const SidebarApp: Component = () => {
     // Load all repos for inactive agent display
     try {
       const allRepos = await ReposAPI.search("");
-      sessionsStore.setRepos(allRepos);
+      sessionsStore.setRepos(allRepos.filter((r) => r.agents.length > 0));
     } catch {}
 
     // Load teams for filter
