@@ -83,6 +83,10 @@ pub fn run() {
             )));
             app.manage(pty_mgr);
 
+            // Start the mailbox poller for inter-agent message delivery
+            let mailbox_poller = phone::mailbox::MailboxPoller::new();
+            mailbox_poller.start(app.handle().clone());
+
             let icon = tauri::image::Image::from_bytes(include_bytes!("../icons/icon.png"))
                 .expect("Failed to load app icon");
 
