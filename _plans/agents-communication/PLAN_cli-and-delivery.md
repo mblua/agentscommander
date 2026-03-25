@@ -2,6 +2,7 @@
 
 **Branch:** `feature/agent-direct-communication`
 **Date:** 2026-03-25
+**Status:** Plan revisado con decisiones de diseño confirmadas
 
 ---
 
@@ -23,6 +24,42 @@ agentscommander.exe list-peers .. → Modo CLI (lista peers, termina)
 
 El binario detecta si tiene subcomandos y actúa en consecuencia. Sin subcomandos → Tauri app. Con subcomandos → CLI puro, sin ventanas.
 
+### Arg parsing: `clap` con derive
+
+Patrón tomado de `amp-big-board/big-board`. En `main.rs`:
+
+```rust
+#[derive(Parser)]
+#[command(name = "agentscommander")]
+struct Cli {
+    #[command(subcommand)]
+    command: Option<Commands>,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    Send { ... },
+    ListPeers { ... },
+}
+
+fn main() {
+    // Si no hay args (o arg es un path como Tauri pasa), ir a modo app
+    // Si hay subcomando reconocido → modo CLI
+    let args = Cli::try_parse();
+    match args {
+        Ok(cli) => match cli.command {
+            Some(cmd) => handle_cli(cmd),  // CLI mode, exit after
+            None => agentscommander_lib::run(),  // App mode
+        },
+        Err(_) => agentscommander_lib::run(),  // No args / unknown → App mode
+    }
+}
+```
+
+### Windows console: `AttachConsole`
+
+`main.rs` tiene `#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]` que suprime la consola en release builds. Para CLI mode, se usa `AttachConsole(ATTACH_PARENT_PROCESS)` antes de cualquier stdout para reconectar a la consola del proceso padre (la PTY del agente).
+
 ---
 
 ## Autenticación: Session Token
@@ -35,9 +72,13 @@ Cada session de agente recibe un **token UUID único** al ser creada. Este token
 - agentscommander valida el token contra la session activa antes de procesar el mensaje
 - Si el token no matchea → rechazo, el agente no puede spoofear otro agente
 
+### Validación de token
+
+Linear scan en `SessionManager`: `sessions.values().find(|s| s.token == token)`. Con max 10-20 sessions activas, es instantáneo. Sin índice secundario.
+
 ### Prompt de inicialización
 
-Al spawnar un agente, agentscommander inyecta en el PTY stdin un bloque como:
+Al spawnar un agente, agentscommander espera un **delay de 3-5 segundos** post-spawn, luego inyecta en el PTY stdin:
 
 ```
 Tu token de sesión para comunicarte con otros agentes es: <UUID>
@@ -47,9 +88,14 @@ Para enviar mensajes a otros agentes:
 
 Para ver agentes disponibles para mensajear:
   agentscommander list-peers --token <UUID>
+
+Cuando recibas un mensaje con get-output, encerrá tu respuesta entre markers:
+  %%AC_RESPONSE::<requestId>::START%%
+  <tu respuesta>
+  %%AC_RESPONSE::<requestId>::END%%
 ```
 
-Este prompt se inyecta después de que el agente arranca y está listo (después del primer idle).
+El delay fijo cubre el boot del agente CLI (1-2s típico). Si no alcanza para algún agente, se puede hacer configurable.
 
 ---
 
@@ -71,39 +117,66 @@ Si el agente está idle (esperando input en la PTY), inyecta el mensaje en el st
 - Cuando el agente vuelve a idle (terminó de responder) → captura el output si aplica, cierra la session
 - Es un "one-shot": spawn → deliver → wait for idle → kill
 
+### Concurrencia de mensajes wake
+
+Procesamiento secuencial. Si llegan 2 mensajes wake al mismo agente en el mismo ciclo de 3s del poller, el primero se inyecta y el segundo queda en outbox hasta el próximo ciclo. Para wake-and-sleep, si ya hay una session temporal activa para ese destinatario, el segundo mensaje va como `queue` (inbox).
+
 ---
 
 ## Selección de Agente CLI (para wake-and-sleep)
 
-Cuando hay que levantar una session nueva, se necesita saber qué agente CLI usar (claude, codex, etc.):
+Cuando hay que levantar una session nueva, se necesita saber qué agente CLI usar:
 
 ### Flag `--agent`
 - `auto` (default): usa el último agente CLI levantado en ese repo. Si no hay historial, usa el mismo agente CLI del sender
 - Nombre específico (ej: `claude`, `codex`): usa ese agente puntual
 
-### Historial de agentes por repo
-agentscommander trackea qué agente CLI fue el último usado en cada repo. Se almacena en `agents.json` o en un campo nuevo en la session persistence.
+### Historial: `lastCodingAgent` en config.json
+
+Cada vez que se instancia un coding agent en un repo, se guarda en `<repo>/.agentscommander/config.json`:
+
+```json
+{
+  "teams": ["dev-core"],
+  "lastCodingAgent": "claude"
+}
+```
+
+Se guarda el `id` del `AgentConfig` (no el command completo). Al hacer wake-and-sleep, se busca en `settings.agents` por ese id para obtener el `command` completo. Si el usuario cambia el command en settings, wake-and-sleep usa la versión actualizada.
 
 ### Información del sender
-El mensaje incluye qué agente CLI usa el sender (para el fallback de `auto` cuando no hay historial en el destinatario).
+El mensaje incluye qué agente CLI usa el sender (campo `senderAgent`) para el fallback de `auto` cuando no hay historial en el destinatario.
 
 ---
 
-## Flag `--get-output`
+## Flag `--get-output` — Response Markers
 
-Cuando se pasa `--get-output`:
+Cuando se pasa `--get-output`, el agente destinatario debe encerrar su respuesta en markers detectables:
 
-1. El CLI genera un `requestId` UUID
-2. Escribe el mensaje con ese `requestId`
-3. El CLI **espera** (pollea) un archivo de respuesta en `.agentscommander/responses/<requestId>.json`
-4. agentscommander entrega el mensaje al destinatario
-5. Cuando el destinatario termina (vuelve a idle en wake/wake-and-sleep), agentscommander captura el output y lo escribe en el archivo de respuesta
-6. El CLI lee la respuesta, la imprime a stdout, y termina
-
-Esto permite que el sender capture la respuesta:
-```bash
-RESULT=$(agentscommander send --token $TOKEN --to "0_repos/project_x" --message "Revisá el endpoint" --mode wake --get-output)
 ```
+%%AC_RESPONSE::<requestId>::START%%
+La respuesta del agente...
+%%AC_RESPONSE::<requestId>::END%%
+```
+
+### Flujo completo
+
+1. El CLI genera un `requestId` UUID y escribe el mensaje con `getOutput: true`
+2. El CLI entra en polling loop: lee `.agentscommander/responses/<requestId>.json` cada 2s
+3. El MailboxPoller entrega el mensaje al agente (wake/wake-and-sleep), inyectando en la PTY
+4. El agente procesa el mensaje y emite su respuesta entre los markers
+5. agentscommander monitorea el output stream de la PTY, detecta los markers via regex
+6. Extrae el contenido entre START y END, lo escribe en `.agentscommander/responses/<requestId>.json`
+7. El CLI detecta el response file, lo lee, imprime a stdout, exit 0
+
+### Ventajas sobre captura raw
+- No requiere vt100 parser temporal
+- No depende del idle detector para delimitar la respuesta
+- Output limpio y delimitado por el propio agente
+- El requestId en los markers previene colisiones con otros mensajes concurrentes
+
+### Timeout
+El CLI tiene un timeout configurable (default 5 minutos). Si no llega respuesta → exit con error.
 
 Sin `--get-output`: fire-and-forget. El CLI escribe, sale con exit 0.
 
@@ -126,22 +199,15 @@ agentscommander list-peers --token <UUID>
 Para cada peer devuelve:
 - `name`: nombre extendido (parent/repo)
 - `status`: si tiene session activa o no
-- `role`: descripción de qué hace — leído del `CLAUDE.md` del repo del peer (por ahora siempre CLAUDE.md)
+- `role`: descripción de qué hace — leído de la sección `## Role Prompt` de `CLAUDE.md`. Fallback: primeras 5 líneas. Fallback final: "No role description available."
 - `teams`: teams compartidos
-- `lastAgent`: último agente CLI usado en ese repo
-
-### Lectura del role prompt
-
-agentscommander lee el `CLAUDE.md` del repo de cada peer y extrae un resumen. Opciones:
-- Leer las primeras N líneas (ej: hasta el primer `---`)
-- Leer una sección específica (ej: `## Role Prompt` o `## Project Overview`)
-- Definir un campo explícito en `.agentscommander/config.json` tipo `"role": "Soy el agente de backend..."`
-
-**Recomendación**: Leer la sección `## Role Prompt` de CLAUDE.md si existe. Si no, las primeras 5 líneas. Fallback: "No role description available."
+- `lastCodingAgent`: último agente CLI usado en ese repo
 
 ---
 
-## Formato del Mensaje (archivo outbox)
+## Outbox Files: Lifecycle
+
+### Formato del mensaje
 
 ```json
 {
@@ -160,20 +226,39 @@ agentscommander lee el `CLAUDE.md` del repo de cada peer y extrae un resumen. Op
 }
 ```
 
-| Campo | Descripción |
-|---|---|
-| `id` | UUID único del mensaje |
-| `token` | Session token del sender — para validación |
-| `from` | Nombre extendido del sender (derivado del token) |
-| `to` | Nombre extendido del destinatario |
-| `body` | Contenido del mensaje |
-| `mode` | `queue`, `active-only`, `wake`, `wake-and-sleep` |
-| `getOutput` | Si true, se espera respuesta |
-| `requestId` | UUID para correlacionar la respuesta (solo si getOutput) |
-| `senderAgent` | Agente CLI del sender (para fallback en auto) |
-| `preferredAgent` | `auto` o nombre específico del agente CLI a usar |
-| `priority` | `normal`, `high` |
-| `timestamp` | ISO 8601 |
+Todos los campos nuevos son `Option` con `#[serde(default)]` para backwards compatibility con el formato anterior.
+
+### Lifecycle del archivo
+
+1. **CLI escribe** → `<repo>/.agentscommander/outbox/<uuid>.json`
+2. **MailboxPoller procesa**:
+   - Éxito → mueve a `outbox/delivered/<uuid>.json` **con token stripeado** (historial de mensajería)
+   - Fallo de validación → mueve a `outbox/rejected/<uuid>.json` con token stripeado + `.reason.txt`
+3. Nunca se borran — queda historial completo
+
+### Seguridad del token en archivos
+- El outbox file contiene el token momentáneamente (entre escritura del CLI y procesamiento del poller, ~3s max)
+- En `delivered/` y `rejected/` el token se stripea antes de mover
+- El directorio outbox es local al repo del agente — acceso al filesystem implica acceso a todo
+- El token solo es útil mientras la session existe — session destruida = token inválido
+
+---
+
+## Wiring: MailboxPoller acceso a PtyManager y SessionManager
+
+El `MailboxPoller` necesita `PtyManager` (para inyectar en PTY) y `SessionManager` (para validar tokens y buscar sessions). Pero `PtyManager` se crea dentro de `setup()` después del poller.
+
+**Solución**: El poller obtiene los handles del `AppHandle` on-demand dentro de `poll()`:
+
+```rust
+async fn poll(&self, app: &AppHandle) {
+    let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+    let session_mgr = app.state::<Arc<RwLock<SessionManager>>>();
+    // ... usar según necesidad del delivery mode
+}
+```
+
+Cero cambio en el orden de construcción. El `AppHandle` ya se pasa al poller en `start()`.
 
 ---
 
@@ -186,23 +271,24 @@ Agente A ejecuta:
   agentscommander send --token ABC --to "0_repos/project_x" --message "Hola" --mode queue
 
 CLI:
-  1. Valida que --token, --to, --message están presentes
-  2. Genera message UUID
-  3. Escribe .agentscommander/outbox/<uuid>.json
-  4. Imprime "Message queued: <uuid>"
-  5. Exit 0
+  1. AttachConsole (Windows release)
+  2. Valida que --token, --to, --message están presentes
+  3. Genera message UUID
+  4. Escribe .agentscommander/outbox/<uuid>.json
+  5. Imprime "Message queued: <uuid>"
+  6. Exit 0
 
 MailboxPoller (cada 3s):
   1. Detecta el archivo en outbox/
   2. Lee el mensaje
-  3. Valida el token contra sessions activas
-  4. Valida que from puede comunicarse con to (peers rules)
+  3. Valida el token contra SessionManager (linear scan)
+  4. Valida visibilidad: peers por team o parent directory
   5. Según mode:
      - queue: escribe en <to>/.agentscommander/inbox/
-     - active-only: si hay session despierta → inyecta en PTY, sino → inbox
+     - active-only: si hay session despierta → inyecta en PTY via PtyManager, sino → inbox
      - wake: si hay session idle → inyecta en PTY, sino → inbox
-     - wake-and-sleep: spawn session temporal → inyecta → wait idle → kill
-  6. Elimina archivo de outbox/
+     - wake-and-sleep: levanta session temporal → inyecta → monitorea idle → cierra
+  6. Mueve archivo a outbox/delivered/ (token stripeado)
   7. Emite evento al frontend
 ```
 
@@ -216,14 +302,18 @@ CLI:
   1. Genera message UUID y requestId
   2. Escribe outbox/<uuid>.json con getOutput: true, requestId: <rid>
   3. Entra en loop de polling: lee .agentscommander/responses/<rid>.json cada 2s
-  4. (bloqueante — el CLI no termina hasta recibir respuesta o timeout)
+  4. (bloqueante — timeout 5 minutos)
 
 MailboxPoller:
-  1. Detecta el mensaje, valida, entrega al agente (wake)
-  2. Monitorea el idle detector del agente destinatario
-  3. Cuando vuelve a idle: captura el output de la PTY (desde el momento de inyección hasta idle)
-  4. Escribe .agentscommander/responses/<rid>.json con el output
-  5. El CLI del sender detecta el archivo, lo lee, imprime a stdout, exit 0
+  1. Detecta el mensaje, valida token y peers
+  2. Inyecta en PTY del destinatario (wake)
+  3. Monitorea output stream del PTY buscando:
+     %%AC_RESPONSE::<rid>::START%%
+     ...contenido...
+     %%AC_RESPONSE::<rid>::END%%
+  4. Extrae el contenido entre markers
+  5. Escribe en <sender_repo>/.agentscommander/responses/<rid>.json
+  6. El CLI del sender detecta el archivo, lo lee, imprime a stdout, exit 0
 ```
 
 ---
@@ -234,100 +324,105 @@ MailboxPoller:
 
 | Archivo | Acción | Qué |
 |---|---|---|
-| `src-tauri/src/main.rs` | MODIFICAR | Detectar subcomandos antes de iniciar Tauri. Si hay subcomando → modo CLI, sino → modo app |
-| `src-tauri/src/cli/mod.rs` | **CREAR** | Módulo CLI: parse de argumentos, subcomandos |
-| `src-tauri/src/cli/send.rs` | **CREAR** | Subcomando `send`: valida args, genera mensaje, escribe a outbox |
-| `src-tauri/src/cli/list_peers.rs` | **CREAR** | Subcomando `list-peers`: lee agents.json, filtra peers, lee role prompts |
+| `src-tauri/src/main.rs` | MODIFICAR | clap parsing antes de run(). AttachConsole en Windows. Modo CLI vs app |
+| `src-tauri/src/cli/mod.rs` | **CREAR** | Módulo CLI: structs clap, dispatch de subcomandos |
+| `src-tauri/src/cli/send.rs` | **CREAR** | Subcomando `send`: valida args, genera mensaje, escribe a outbox, polling para get-output |
+| `src-tauri/src/cli/list_peers.rs` | **CREAR** | Subcomando `list-peers`: lee agents.json, filtra peers, lee CLAUDE.md roles |
+| `src-tauri/Cargo.toml` | MODIFICAR | Agregar `clap = { version = "4", features = ["derive"] }` |
 
 ### Session Token (Rust)
 
 | Archivo | Acción | Qué |
 |---|---|---|
-| `src-tauri/src/session/session.rs` | MODIFICAR | Agregar campo `token: Uuid` a `Session` |
-| `src-tauri/src/session/manager.rs` | MODIFICAR | Generar token en `create_session` |
-| `src-tauri/src/phone/agent_registry.rs` | MODIFICAR | Incluir token en agents.json? NO — el token es secreto. Solo validar contra SessionManager |
+| `src-tauri/src/session/session.rs` | MODIFICAR | Agregar campo `token: Uuid` a `Session` y `SessionInfo` |
+| `src-tauri/src/session/manager.rs` | MODIFICAR | Generar token en `create_session`, agregar `find_by_token()` (linear scan) |
 
 ### Delivery (Rust)
 
 | Archivo | Acción | Qué |
 |---|---|---|
-| `src-tauri/src/phone/mailbox.rs` | MODIFICAR | Agregar lógica de delivery por modo (queue/active-only/wake/wake-and-sleep), validación de token, captura de output |
-| `src-tauri/src/phone/types.rs` | MODIFICAR | Actualizar OutboxMessage con campos nuevos (token, mode, getOutput, requestId, senderAgent, preferredAgent) |
-| `src-tauri/src/pty/manager.rs` | MODIFICAR | Agregar método para inyectar texto en el stdin de una PTY existente |
+| `src-tauri/src/phone/mailbox.rs` | MODIFICAR | Delivery por modo, validación de token (via AppHandle → SessionManager), inyección PTY (via AppHandle → PtyManager), monitoreo de response markers, move to delivered/ |
+| `src-tauri/src/phone/types.rs` | MODIFICAR | Campos nuevos en OutboxMessage (todos Option + serde default), ResponseMarker struct |
 
 ### Prompt de inicialización
 
 | Archivo | Acción | Qué |
 |---|---|---|
-| `src-tauri/src/commands/session.rs` | MODIFICAR | Después de spawn y primer idle, inyectar prompt con token y instrucciones CLI |
+| `src-tauri/src/commands/session.rs` | MODIFICAR | Delay 3-5s post-spawn, inyectar prompt con token, instrucciones CLI, y formato de response markers |
 
 ### Agent History
 
 | Archivo | Acción | Qué |
 |---|---|---|
-| `src-tauri/src/phone/agent_registry.rs` | MODIFICAR | Trackear `lastAgentCli` por repo path |
+| `src-tauri/src/config/dark_factory.rs` | MODIFICAR | Agregar `lastCodingAgent` a `AgentLocalConfig`, actualizar en `sync_agent_configs` |
+| `src-tauri/src/commands/session.rs` | MODIFICAR | Al crear session con agent, guardar el agent id en config.json del repo |
 
 ### Frontend
 
 | Archivo | Acción | Qué |
 |---|---|---|
-| `src/shared/types.ts` | MODIFICAR | Agregar campos de delivery mode, token-related types |
-| `src/shared/ipc.ts` | MODIFICAR | Si se agregan nuevos eventos/commands |
+| `src/shared/types.ts` | MODIFICAR | Agregar campos de delivery mode, response marker types |
+| `src/shared/ipc.ts` | MODIFICAR | Nuevos eventos si los hay |
 
 ---
 
 ## Orden de ejecución
 
-### Step 1: CLI skeleton
-1. Modificar `main.rs` para detectar subcomandos
-2. Crear módulo `cli/` con parse de args
-3. Implementar `send` básico (escribe outbox, fire-and-forget, sin validación de token)
-4. Test: ejecutar `agentscommander send --to X --message Y` desde una terminal
+### Step 1: CLI skeleton + clap
+1. Agregar `clap` a Cargo.toml
+2. Modificar `main.rs`: clap parsing, AttachConsole, dispatch
+3. Crear módulo `cli/` con structs
+4. Implementar `send` básico (escribe outbox, fire-and-forget, sin validación de token)
+5. Test: ejecutar `agentscommander send --to X --message Y` desde una terminal
 
 ### Step 2: Session Token
 1. Agregar `token: Uuid` a `Session` struct
 2. Generar en `create_session`
-3. Almacenar en SessionManager
-4. Agregar validación de token en MailboxPoller
-5. Test: verificar que el token se genera y persiste
+3. Implementar `find_by_token()` en SessionManager (linear scan)
+4. Agregar validación de token en MailboxPoller (via AppHandle)
+5. Test: verificar que el token se genera y se valida correctamente
 
 ### Step 3: Prompt de inicialización
-1. Después del primer idle de una session, inyectar prompt con token e instrucciones
-2. El prompt incluye: token, sintaxis de `send`, sintaxis de `list-peers`
+1. Después de spawn + delay 3-5s, inyectar prompt con token e instrucciones
+2. El prompt incluye: token, sintaxis de `send`, sintaxis de `list-peers`, formato de response markers
 3. Test: crear session, verificar que el prompt aparece en la PTY
 
 ### Step 4: Delivery modes
-1. Implementar `queue` (ya existe — escribir a inbox)
-2. Implementar `active-only` (verificar session status antes de entregar)
-3. Implementar `wake` (inyectar en PTY stdin si idle)
-4. Implementar `wake-and-sleep` (spawn temporal, inyectar, wait idle, kill)
-5. Test manual de cada modo
+1. MailboxPoller obtiene PtyManager y SessionManager del AppHandle
+2. Implementar `queue` (ya existe — escribir a inbox)
+3. Implementar `active-only` (verificar session status)
+4. Implementar `wake` (inyectar en PTY stdin via PtyManager::write si idle)
+5. Implementar `wake-and-sleep` (spawn temporal, inyectar, wait idle, kill)
+6. Mover procesados a `outbox/delivered/` con token stripeado
+7. Test manual de cada modo
 
-### Step 5: get-output
+### Step 5: get-output con response markers
 1. Agregar requestId al mensaje
 2. CLI entra en polling loop esperando response file
-3. MailboxPoller captura output de PTY entre inyección e idle
-4. Escribe response file
+3. MailboxPoller monitorea output stream buscando `%%AC_RESPONSE::<rid>::START/END%%`
+4. Extrae contenido, escribe response file
 5. Test: enviar con --get-output, verificar que llega la respuesta
 
 ### Step 6: list-peers
 1. Implementar subcomando `list-peers`
 2. Leer agents.json, filtrar por teams o parent directory
-3. Leer CLAUDE.md de cada peer para extraer role
-4. Devolver JSON o texto formateado
+3. Leer `## Role Prompt` de CLAUDE.md de cada peer
+4. Devolver JSON formateado
 5. Test: ejecutar list-peers, verificar output
 
-### Step 7: Agent History
-1. Trackear último agente CLI usado por repo
+### Step 7: Agent History (lastCodingAgent)
+1. Al crear session con un agent, guardar su id en `<repo>/.agentscommander/config.json` como `lastCodingAgent`
 2. Usar para el fallback de `--agent auto` en wake-and-sleep
+3. Test: crear sessions con distintos agents, verificar que se actualiza
 
 ---
 
 ## Consideraciones
 
-- **Seguridad del token**: El token NO va en env vars, NO va en agents.json, NO va en archivos accesibles. Solo existe en memoria (SessionManager) y en el prompt que recibió el agente. El outbox file contiene el token pero se borra después de procesado.
-- **Timeout para get-output**: El CLI debe tener un timeout configurable (default 5 minutos). Si no llega respuesta, exit con error.
-- **Captura de output para get-output**: Se necesita un mecanismo para capturar el output de la PTY entre el momento de inyección y el retorno a idle. Posiblemente usar el vt100 crate que ya está en dependencias para capturar el texto renderizado.
-- **wake-and-sleep cleanup**: Si la session temporal crashea o el agente no vuelve a idle, agentscommander debe tener un timeout para matar la session forzosamente.
-- **Concurrencia**: Múltiples mensajes wake al mismo agente se deben encolar, no inyectar simultáneamente.
-- **CLI binary path**: El CLI es el mismo binario que la app. Los agentes necesitan conocer el path al binario. Se puede pasar en el prompt de inicialización o detectar automáticamente.
+- **Seguridad del token**: Solo existe en memoria (SessionManager) y en el prompt del agente. Outbox files lo contienen brevemente (~3s). En delivered/rejected se stripea.
+- **Timeout para get-output**: Default 5 minutos, configurable via flag `--timeout`.
+- **Response markers**: `%%AC_RESPONSE::<requestId>::START%%` / `%%AC_RESPONSE::<requestId>::END%%`. El agente aprende el formato del prompt de inicialización.
+- **wake-and-sleep cleanup**: Si la session temporal no vuelve a idle, timeout forzoso para matar la session (configurable, default 10 minutos).
+- **Concurrencia**: Secuencial por destinatario. Segundo mensaje wake queda en outbox 3s más. Wake-and-sleep con session temporal activa → fallback a queue.
+- **CLI binary path**: Se pasa en el prompt de inicialización junto con el token.
+- **Backwards compatibility**: Campos nuevos en OutboxMessage son `Option` con `serde(default)`. Mensajes sin token se procesan sin autenticación (legacy mode).
