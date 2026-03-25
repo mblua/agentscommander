@@ -14,6 +14,7 @@ use crate::DetachedSessionsState;
 
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
+/// After spawn, schedules a delayed injection of the session token + CLI instructions.
 pub async fn create_session_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -37,6 +38,7 @@ pub async fn create_session_inner(
     }
 
     let id = session.id;
+    let token = session.token;
 
     pty_mgr
         .lock()
@@ -46,6 +48,45 @@ pub async fn create_session_inner(
 
     let info = SessionInfo::from(&session);
     let _ = app.emit("session_created", info.clone());
+
+    // Schedule delayed injection of session token + CLI instructions into PTY
+    let pty_mgr_clone = Arc::clone(pty_mgr);
+    tokio::spawn(async move {
+        // Wait for the agent CLI to boot (3s covers most agents)
+        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+
+        let binary_path = std::env::current_exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "agentscommander".to_string());
+
+        let init_prompt = format!(
+            concat!(
+                "\n",
+                "# === AgentsCommander Session Init ===\n",
+                "# Your session token: {token}\n",
+                "#\n",
+                "# To send messages to other agents:\n",
+                "#   \"{bin}\" send --token {token} --to \"<agent_name>\" --message \"...\" [--mode queue|active-only|wake|wake-and-sleep] [--get-output] [--agent <agent_cli>]\n",
+                "#\n",
+                "# To list available peers:\n",
+                "#   \"{bin}\" list-peers --token {token}\n",
+                "#\n",
+                "# When you receive a message with get-output, wrap your response:\n",
+                "#   %%AC_RESPONSE::<requestId>::START%%\n",
+                "#   <your response>\n",
+                "#   %%AC_RESPONSE::<requestId>::END%%\n",
+                "# === End Session Init ===\n",
+            ),
+            token = token,
+            bin = binary_path,
+        );
+
+        if let Ok(mgr) = pty_mgr_clone.lock() {
+            if let Err(e) = mgr.write(id, init_prompt.as_bytes()) {
+                log::warn!("Failed to inject init prompt for session {}: {}", id, e);
+            }
+        }
+    });
 
     Ok(info)
 }
