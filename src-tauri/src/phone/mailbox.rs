@@ -375,6 +375,11 @@ impl MailboxPoller {
         // Only use response markers for non-interactive sessions
         let use_markers = msg.get_output && !interactive;
 
+        // Resolve binary path for reply instructions
+        let bin_path = std::env::current_exe()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|_| "agentscommander".to_string());
+
         let payload = if use_markers {
             if let Some(ref rid) = msg.request_id {
                 format!(
@@ -385,7 +390,15 @@ impl MailboxPoller {
                 format!("\n[Message from {}] {}\n\r", msg.from, msg.body)
             }
         } else {
-            format!("\n[Message from {}] {}\n\r", msg.from, msg.body)
+            format!(
+                concat!(
+                    "\n[Message from {from}] {body}\n",
+                    "(To reply, run: \"{bin}\" send --token <your_token> --to \"{from}\" --message \"your reply\" --mode wake)\n\r",
+                ),
+                from = msg.from,
+                body = msg.body,
+                bin = bin_path,
+            )
         };
 
         // Register response watcher only for non-interactive sessions
