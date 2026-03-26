@@ -59,27 +59,11 @@ pub async fn create_session_inner(
         }
     }
 
-    // Only inject init prompt if this repo belongs to a team (has messaging peers)
+    // Always inject init prompt so agents know their token.
+    // Team validation happens in the mailbox via can_reach(), not here.
     let cwd_for_init = cwd.clone();
     let pty_mgr_clone = Arc::clone(pty_mgr);
     tauri::async_runtime::spawn(async move {
-        // Check if repo has teams configured
-        let config_path = std::path::Path::new(&cwd_for_init)
-            .join(".agentscommander")
-            .join("config.json");
-        let has_teams = if let Ok(content) = tokio::fs::read_to_string(&config_path).await {
-            serde_json::from_str::<serde_json::Value>(&content)
-                .ok()
-                .and_then(|v| v.get("teams")?.as_array().map(|a| !a.is_empty()))
-                .unwrap_or(false)
-        } else {
-            false
-        };
-
-        if !has_teams {
-            return;
-        }
-
         // Wait for the agent CLI to boot (3s covers most agents)
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
