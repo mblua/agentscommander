@@ -37,24 +37,34 @@ impl IdleDetector {
     /// Mark that a resize just happened for this session.
     /// PTY output within RESIZE_GRACE will be ignored (prompt repaint noise).
     pub fn record_resize(&self, session_id: Uuid) {
+        log::info!("[idle] RESIZE recorded for {}", &session_id.to_string()[..8]);
         self.resize_grace.lock().unwrap().insert(session_id, Instant::now());
     }
 
-    /// Record PTY activity for a session. If the session was idle,
-    /// fires on_busy and removes it from idle_set.
-    /// Ignores activity within the resize grace period.
-    pub fn record_activity(&self, session_id: Uuid) {
+    /// Record PTY activity (with byte count for diagnostics).
+    pub fn record_activity_with_bytes(&self, session_id: Uuid, byte_count: usize) {
+        let sid = &session_id.to_string()[..8];
         // Suppress activity caused by resize prompt repaint
         if let Some(&last_resize) = self.resize_grace.lock().unwrap().get(&session_id) {
-            if last_resize.elapsed() < RESIZE_GRACE {
+            let elapsed = last_resize.elapsed();
+            if elapsed < RESIZE_GRACE {
+                log::info!("[idle] SUPPRESSED {} ({} bytes, {}ms after resize)", sid, byte_count, elapsed.as_millis());
                 return;
             }
         }
-        self.activity.lock().unwrap().insert(session_id, Instant::now());
-        let was_idle = self.idle_set.lock().unwrap().remove(&session_id);
+        let was_idle = {
+            self.activity.lock().unwrap().insert(session_id, Instant::now());
+            self.idle_set.lock().unwrap().remove(&session_id)
+        };
         if was_idle {
+            log::info!("[idle] BUSY {} ({} bytes, was idle → now busy)", sid, byte_count);
             (self.on_busy)(session_id);
         }
+    }
+
+    /// Record PTY activity for a session (backwards-compatible wrapper).
+    pub fn record_activity(&self, session_id: Uuid) {
+        self.record_activity_with_bytes(session_id, 0);
     }
 
     /// Remove a session from tracking (called on session destroy).
@@ -80,6 +90,7 @@ impl IdleDetector {
                         && !idle_set.contains(&session_id)
                     {
                         idle_set.insert(session_id);
+                        log::info!("[idle] IDLE {} ({}ms since last activity)", &session_id.to_string()[..8], now.duration_since(last_seen).as_millis());
                         (detector.on_idle)(session_id);
                     }
                 }

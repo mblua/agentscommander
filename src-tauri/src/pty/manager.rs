@@ -147,7 +147,7 @@ impl PtyManager {
                         let data = buf[..n].to_vec();
 
                         // Record PTY activity for idle detection
-                        idle_detector.record_activity(id);
+                        idle_detector.record_activity_with_bytes(id, n);
 
                         // Scan for response markers
                         if let Ok(text) = std::str::from_utf8(&data) {
