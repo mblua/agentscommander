@@ -78,9 +78,7 @@ pub async fn create_session_inner(
         // Wait for the agent CLI to boot (3s covers most agents)
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 
-        let binary_path = std::env::current_exe()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "agentscommander".to_string());
+        let binary_path = crate::resolve_bin_label();
 
         let init_prompt = format!(
             concat!(

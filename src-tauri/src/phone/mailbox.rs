@@ -178,7 +178,20 @@ impl MailboxPoller {
                 if let Ok(token_uuid) = Uuid::parse_str(token_str) {
                     match mgr.find_by_token(token_uuid).await {
                         None => {
-                            return self.reject_message(path, &msg, "Invalid session token").await;
+                            // Token is stale/invalid. Try to find the sender's active session
+                            // by CWD match — if found, the sender is legit (verified by outbox
+                            // anti-spoofing above), so refresh their token and continue.
+                            drop(mgr);
+                            if let Some(session_id) = self.find_active_session(app, &msg.from).await {
+                                log::info!(
+                                    "[mailbox] Stale token from '{}' — found active session {}, refreshing token",
+                                    msg.from, session_id
+                                );
+                                self.inject_fresh_token(app, session_id).await;
+                                // Continue processing — sender verified by CWD match
+                            } else {
+                                return self.reject_message(path, &msg, "Invalid session token and no active session to refresh").await;
+                            }
                         }
                         Some(session) => {
                             // Anti-spoofing: verify msg.from matches the token's session working_directory
@@ -442,9 +455,7 @@ impl MailboxPoller {
         let use_markers = msg.get_output && !interactive;
 
         // Resolve binary path for reply instructions
-        let bin_path = std::env::current_exe()
-            .map(|p| p.to_string_lossy().to_string())
-            .unwrap_or_else(|_| "agentscommander".to_string());
+        let bin_path = crate::resolve_bin_label();
 
         let payload = if use_markers {
             if let Some(ref rid) = msg.request_id {
@@ -666,7 +677,7 @@ impl MailboxPoller {
         Ok(())
     }
 
-    /// Reject a message: move to outbox/rejected/ with reason.
+    /// Reject a message: move to outbox/rejected/ with reason, and notify the sender.
     async fn reject_message(&self, path: &Path, msg: &OutboxMessage, reason: &str) -> Result<(), String> {
         let rejected_dir = path
             .parent()
@@ -696,5 +707,49 @@ impl MailboxPoller {
 
         log::warn!("Rejected message {}: {}", msg.id, reason);
         Ok(())
+    }
+
+    /// Inject the current valid token into a session's PTY so the agent can update its credentials.
+    /// Called when we detect the agent is using a stale token.
+    async fn inject_fresh_token(&self, app: &tauri::AppHandle, session_id: Uuid) {
+        // Extract session data under the read-lock, then drop before acquiring PtyManager mutex.
+        // This follows the same lock ordering pattern as inject_into_pty / deliver_wake.
+        let notice = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            let sessions = mgr.list_sessions().await;
+
+            match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                Some(session) => format!(
+                    concat!(
+                        "\n",
+                        "# === TOKEN REFRESHED ===\n",
+                        "# Your previous token was invalid. Here is your updated token:\n",
+                        "# New session token: {token}\n",
+                        "#\n",
+                        "# Updated send command:\n",
+                        "#   \"{bin}\" send --token {token} --root \"{root}\" --to \"<agent_name>\" --message \"...\" --mode wake\n",
+                        "# === End Token Refresh ===\n",
+                        "\r",
+                    ),
+                    token = session.token,
+                    bin = crate::resolve_bin_label(),
+                    root = session.working_directory,
+                ),
+                None => {
+                    log::warn!("[mailbox] inject_fresh_token: session {} not found", session_id);
+                    return;
+                }
+            }
+            // SessionManager read-lock dropped here
+        };
+
+        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+        let result = pty_mgr.lock().map(|mgr| mgr.write(session_id, notice.as_bytes()));
+        match result {
+            Ok(Ok(())) => log::info!("[mailbox] Fresh token injected into session {}", session_id),
+            Ok(Err(e)) => log::warn!("[mailbox] Failed to inject fresh token into session {}: {}", session_id, e),
+            Err(_) => log::warn!("[mailbox] PtyManager lock poisoned while injecting token for {}", session_id),
+        }
     }
 }
