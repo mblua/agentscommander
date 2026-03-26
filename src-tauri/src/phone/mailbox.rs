@@ -131,9 +131,29 @@ impl MailboxPoller {
             let mgr = session_mgr.read().await;
 
             if let Ok(token_uuid) = Uuid::parse_str(token_str) {
-                if mgr.find_by_token(token_uuid).await.is_none() {
-                    // Invalid token — reject
-                    return self.reject_message(path, &msg, "Invalid session token").await;
+                match mgr.find_by_token(token_uuid).await {
+                    None => {
+                        return self.reject_message(path, &msg, "Invalid session token").await;
+                    }
+                    Some(session) => {
+                        // Anti-spoofing: verify msg.from matches the token's session working_directory
+                        let session_name = self.agent_name_from_path(&session.working_directory);
+                        if session_name != msg.from {
+                            log::warn!(
+                                "[mailbox] Token-root mismatch: token session='{}' but from='{}'",
+                                session_name, msg.from
+                            );
+                            return self.reject_message(
+                                path,
+                                &msg,
+                                &format!(
+                                    "Token-root mismatch: session is '{}' but message claims '{}'",
+                                    session_name, msg.from
+                                ),
+                            )
+                            .await;
+                        }
+                    }
                 }
             } else {
                 return self.reject_message(path, &msg, "Malformed token").await;
@@ -505,6 +525,21 @@ impl MailboxPoller {
         }
 
         None
+    }
+
+    /// Derive agent name (parent/folder) from a path.
+    fn agent_name_from_path(&self, path: &str) -> String {
+        let normalized = path.replace('\\', "/");
+        let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
+        if components.len() >= 2 {
+            format!(
+                "{}/{}",
+                components[components.len() - 2],
+                components[components.len() - 1]
+            )
+        } else {
+            normalized
+        }
     }
 
     /// Check if sender can reach destination via team membership.

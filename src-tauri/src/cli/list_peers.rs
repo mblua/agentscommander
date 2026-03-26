@@ -7,6 +7,10 @@ pub struct ListPeersArgs {
     /// Session token for authentication
     #[arg(long)]
     pub token: Option<String>,
+
+    /// Agent root directory — overrides CWD-based resolution
+    #[arg(long)]
+    pub root: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -124,12 +128,21 @@ fn load_teams_config() -> Option<serde_json::Value> {
 }
 
 pub fn execute(args: ListPeersArgs) -> i32 {
-    let ac_dir = match find_ac_dir() {
-        Some(d) => d,
-        None => {
-            eprintln!("Error: no .agentscommander directory found");
-            return 1;
-        }
+    let (ac_dir, my_name) = if let Some(ref root) = args.root {
+        let ac = PathBuf::from(root).join(".agentscommander");
+        let name = agent_name_from_path(root);
+        (ac, name)
+    } else {
+        let ac = match find_ac_dir() {
+            Some(d) => d,
+            None => {
+                eprintln!("Error: no .agentscommander directory found. Use --root <path> or run from your repo root.");
+                return 1;
+            }
+        };
+        let repo = ac.parent().unwrap_or(Path::new("."));
+        let name = agent_name_from_path(&repo.to_string_lossy());
+        (ac, name)
     };
 
     // Read our own config
@@ -142,9 +155,6 @@ pub fn execute(args: ListPeersArgs) -> i32 {
             is_coordinator_of: vec![],
             last_coding_agent: None,
         });
-
-    let my_repo_path = ac_dir.parent().unwrap_or(Path::new("."));
-    let my_name = agent_name_from_path(&my_repo_path.to_string_lossy());
 
     let mut peers: Vec<PeerInfo> = Vec::new();
 

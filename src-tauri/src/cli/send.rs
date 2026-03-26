@@ -32,6 +32,10 @@ pub struct SendArgs {
     /// Timeout in seconds for --get-output (default: 300)
     #[arg(long, default_value = "300")]
     pub timeout: u64,
+
+    /// Agent root directory — overrides CWD-based resolution
+    #[arg(long)]
+    pub root: Option<String>,
 }
 
 /// Outbox message written to .agentscommander/outbox/<uuid>.json
@@ -59,15 +63,10 @@ pub struct OutboxMessage {
     pub timestamp: String,
 }
 
-/// Resolve the current repo identity from cwd.
-/// Uses the last two path components (parent/repo) as the agent name.
-fn resolve_sender_name() -> String {
-    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let components: Vec<&str> = cwd
-        .components()
-        .filter_map(|c| c.as_os_str().to_str())
-        .collect();
-
+/// Derive agent name from a path: last two components → "parent/folder"
+fn agent_name_from_root(root: &str) -> String {
+    let normalized = root.replace('\\', "/");
+    let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     if components.len() >= 2 {
         format!(
             "{}/{}",
@@ -75,11 +74,19 @@ fn resolve_sender_name() -> String {
             components[components.len() - 1]
         )
     } else {
-        cwd.to_string_lossy().to_string()
+        normalized
     }
 }
 
-/// Find the .agentscommander directory for the current repo (walks up from cwd).
+/// Resolve the current repo identity from cwd.
+/// Fallback for manual CLI usage without --root.
+fn resolve_sender_name() -> String {
+    let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+    agent_name_from_root(&cwd.to_string_lossy())
+}
+
+/// Find the .agentscommander directory by walking up from cwd.
+/// Fallback for manual CLI usage without --root.
 fn find_ac_dir() -> Option<PathBuf> {
     let mut dir = std::env::current_dir().ok()?;
     loop {
@@ -95,7 +102,22 @@ fn find_ac_dir() -> Option<PathBuf> {
 }
 
 pub fn execute(args: SendArgs) -> i32 {
-    let sender = resolve_sender_name();
+    // Resolve sender name and .agentscommander dir
+    let (sender, ac_dir) = if let Some(ref root) = args.root {
+        let name = agent_name_from_root(root);
+        let ac = PathBuf::from(root).join(".agentscommander");
+        (name, ac)
+    } else {
+        let name = resolve_sender_name();
+        let ac = match find_ac_dir() {
+            Some(d) => d,
+            None => {
+                eprintln!("Error: no .agentscommander directory found. Use --root <path> or run from your repo root.");
+                return 1;
+            }
+        };
+        (name, ac)
+    };
 
     // Validate mode
     let valid_modes = ["queue", "active-only", "wake", "wake-and-sleep"];
@@ -124,21 +146,13 @@ pub fn execute(args: SendArgs) -> i32 {
         mode: args.mode,
         get_output: args.get_output,
         request_id: request_id.clone(),
-        sender_agent: None, // Will be populated in Step 7
+        sender_agent: None,
         preferred_agent: args.agent,
         priority: "normal".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
     };
 
     // Write to .agentscommander/outbox/
-    let ac_dir = match find_ac_dir() {
-        Some(d) => d,
-        None => {
-            eprintln!("Error: no .agentscommander directory found in current path hierarchy");
-            return 1;
-        }
-    };
-
     let outbox_dir = ac_dir.join("outbox");
     if let Err(e) = std::fs::create_dir_all(&outbox_dir) {
         eprintln!("Error: failed to create outbox directory: {}", e);
