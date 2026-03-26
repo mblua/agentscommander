@@ -1,4 +1,4 @@
-import { Component, createSignal, createEffect, For, Show, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, createEffect, createMemo, For, Show, onMount, onCleanup } from "solid-js";
 import type { AgentConfig, RepoMatch } from "../../shared/types";
 import { ReposAPI, SessionAPI, SettingsAPI } from "../../shared/ipc";
 
@@ -6,6 +6,9 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
   const [query, setQuery] = createSignal("");
   const [repos, setRepos] = createSignal<RepoMatch[]>([]);
   const [agents, setAgents] = createSignal<AgentConfig[]>([]);
+  const sortedAgents = createMemo(() =>
+    [...agents()].sort((a, b) => a.label.localeCompare(b.label, "en", { sensitivity: "base", numeric: true }))
+  );
   const [selectedRepo, setSelectedRepo] = createSignal<RepoMatch | null>(props.initialRepo ?? null);
   const [highlightIndex, setHighlightIndex] = createSignal(0);
   const [loading, setLoading] = createSignal(false);
@@ -71,7 +74,7 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
       }
     } else {
       // Agent selection navigation
-      const agentList = agents();
+      const agentList = sortedAgents();
       if (e.key === "ArrowDown") {
         e.preventDefault();
         setHighlightIndex((i) => Math.min(i + 1, agentList.length - 1));
@@ -170,7 +173,7 @@ const OpenAgentModal: Component<{ onClose: () => void; initialRepo?: RepoMatch }
           <Show
             when={!selectedRepo()}
             fallback={
-              <For each={agents()}>
+              <For each={sortedAgents()}>
                 {(agent, i) => (
                   <div
                     class={`agent-modal-item agent-choice ${i() === highlightIndex() ? "highlighted" : ""}`}

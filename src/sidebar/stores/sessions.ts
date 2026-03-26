@@ -62,7 +62,11 @@ const filteredSessionsMemo = createMemo(() => {
     });
   })();
 
-  if (!state.showInactive) return activeSessions;
+  const sortKey = (s: Session) => {
+    const i = s.name.lastIndexOf("/");
+    return i >= 0 ? s.name.slice(i + 1) : s.name;
+  };
+  if (!state.showInactive) return [...activeSessions].sort((a, b) => sortKey(a).localeCompare(sortKey(b), "en", { sensitivity: "base", numeric: true }));
 
   // Add inactive repos/members that don't have active sessions
   const activePathSet = new Set(
@@ -104,7 +108,9 @@ const filteredSessionsMemo = createMemo(() => {
     }
   }
 
-  return [...activeSessions, ...inactiveEntries];
+  return [...activeSessions, ...inactiveEntries].sort((a, b) =>
+    sortKey(a).localeCompare(sortKey(b), "en", { sensitivity: "base", numeric: true })
+  );
 });
 
 export const sessionsStore = {
