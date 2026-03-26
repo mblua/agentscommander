@@ -113,8 +113,9 @@ impl MailboxPoller {
                 Err(_) => continue,
             };
 
+            let is_app_outbox = outbox_dir.as_path() == Path::new(&app_outbox_path);
             for path in entries {
-                if let Err(e) = self.process_message(app, &path).await {
+                if let Err(e) = self.process_message(app, &path, is_app_outbox).await {
                     log::warn!("Failed to process outbox message {:?}: {}", path, e);
                 }
             }
@@ -124,7 +125,8 @@ impl MailboxPoller {
     }
 
     /// Process a single outbox message file.
-    async fn process_message(&self, app: &tauri::AppHandle, path: &Path) -> Result<(), String> {
+    /// `is_app_outbox`: true if the message came from the instance-private outbox (master token path).
+    async fn process_message(&self, app: &tauri::AppHandle, path: &Path, is_app_outbox: bool) -> Result<(), String> {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read outbox file: {}", e))?;
 
@@ -135,6 +137,27 @@ impl MailboxPoller {
             "[mailbox] Processing message {} from='{}' to='{}' mode='{}'",
             msg.id, msg.from, msg.to, msg.mode
         );
+
+        // For repo outboxes (not app-outbox), validate that msg.from matches the outbox owner.
+        // This prevents tokenless spoofing: a message in repo X's outbox must claim to be from repo X.
+        if !is_app_outbox {
+            let outbox_dir = path.parent().unwrap_or(Path::new(""));
+            // outbox_dir is <repo>/.agentscommander/outbox — go up 2 levels to get the repo path
+            if let Some(repo_path) = outbox_dir.parent().and_then(|p| p.parent()) {
+                let expected_from = self.agent_name_from_path(&repo_path.to_string_lossy());
+                if expected_from != msg.from {
+                    return self.reject_message(
+                        path,
+                        &msg,
+                        &format!(
+                            "Outbox-sender mismatch: outbox belongs to '{}' but message claims '{}'",
+                            expected_from, msg.from
+                        ),
+                    )
+                    .await;
+                }
+            }
+        }
 
         // Check if token is the master token (bypasses anti-spoofing + team validation)
         let is_master = if let Some(ref token_str) = msg.token {

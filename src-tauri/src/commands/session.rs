@@ -59,11 +59,22 @@ pub async fn create_session_inner(
         }
     }
 
-    // Always inject init prompt so agents know their token.
-    // Team validation happens in the mailbox via can_reach(), not here.
+    // Inject init prompt for agent sessions so they know their token.
+    // Skip for plain interactive shells (powershell, cmd, bash, etc.)
+    let shell_lower = shell.to_lowercase();
+    let is_interactive_shell = ["powershell", "pwsh", "cmd", "bash", "zsh", "sh", "wsl", "nu"]
+        .iter()
+        .any(|s| shell_lower == *s || shell_lower.ends_with(&format!("/{}", s)) || shell_lower.ends_with(&format!("\\{}", s)));
+
     let cwd_for_init = cwd.clone();
     let pty_mgr_clone = Arc::clone(pty_mgr);
+    if is_interactive_shell {
+        log::debug!("Skipping init prompt for interactive shell '{}'", shell);
+    }
     tauri::async_runtime::spawn(async move {
+        if is_interactive_shell {
+            return;
+        }
         // Wait for the agent CLI to boot (3s covers most agents)
         tokio::time::sleep(std::time::Duration::from_secs(3)).await;
 

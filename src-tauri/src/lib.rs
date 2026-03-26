@@ -74,13 +74,20 @@ pub fn run() {
     // Generate master token — printed once to stdout, never persisted
     let master_token = MasterToken::new(uuid::Uuid::new_v4().to_string());
 
-    // Create instance-private outbox directory
+    // Create instance-private outbox directory and clean up stale ones
+    let config_dir = config::config_dir().expect("Cannot determine home directory");
+    let instances_dir = config_dir.join("instances");
+
+    // Clean up old instance dirs (from previous runs)
+    if let Ok(entries) = std::fs::read_dir(&instances_dir) {
+        for entry in entries.flatten() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+        log::info!("[app-outbox] Cleaned stale instance directories");
+    }
+
     let instance_id = uuid::Uuid::new_v4().to_string();
-    let app_outbox_path = config::config_dir()
-        .expect("Cannot determine home directory")
-        .join("instances")
-        .join(&instance_id)
-        .join("outbox");
+    let app_outbox_path = instances_dir.join(&instance_id).join("outbox");
     std::fs::create_dir_all(&app_outbox_path).expect("Failed to create app outbox directory");
     let app_outbox = AppOutbox::new(app_outbox_path.to_string_lossy().to_string());
 
