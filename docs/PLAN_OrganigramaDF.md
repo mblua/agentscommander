@@ -499,15 +499,56 @@ const saved = settings[zoomKeyMap[windowType]] as number;
 
 ---
 
-## Orden de Ejecucion
+## Etapas de Implementacion
+
+La implementacion se divide en dos etapas independientes. La Etapa 1 se mergea y testea antes de comenzar la Etapa 2. Esto permite validar los cambios al sistema de mensajeria (riesgo alto) sin mezclarlos con codigo visual nuevo (riesgo bajo).
+
+---
+
+### ETAPA 1 — Backend + Settings (riesgo alto, testeable sin UI nueva)
+
+Toca el modelo de datos, el sistema de mensajeria, y la UI de configuracion. Mergeable y testeable de forma independiente: se puede verificar que los coordinator links funcionan enviando mensajes entre agentes y revisando los `config.json` propagados.
+
+#### Pasos
 
 | Paso | Descripcion |
 |------|-------------|
 | 1 | Extender tipos TS + Rust (`DarkFactoryLayer`, `CoordinatorLink`, extender `Team`, `DarkFactoryConfig`) con atributos serde correctos |
 | 1b | Extender `AgentLocalConfig` (Default + campos) + `sync_agent_configs` (algoritmo links) + `can_communicate` (membership validation) + `save_dark_factory` (cycle check + coordinator validation) |
-| 2 | UI en Settings: CRUD de Layers + asignar layer a team + selector "Reports to" + **fix save handler** |
+| 2 | UI en Settings: CRUD de Layers + asignar layer a team + selector "Reports to" + **fix save handler** + **fix createStore init** |
+
+#### Archivos a modificar
+
+| Archivo | Cambio |
+|---------|--------|
+| `src/shared/types.ts` | `DarkFactoryLayer`, `CoordinatorLink`, extender `Team`, `DarkFactoryConfig` |
+| `src/sidebar/components/SettingsModal.tsx` | UI layers/links + fix save `{ ...dfConfig }` + fix createStore init `{ teams: [], layers: [], coordinatorLinks: [] }` |
+| `src-tauri/src/config/dark_factory.rs` | Structs nuevas, `#[derive(Default)]` en `AgentLocalConfig`, campos `supervises`/`reports_to`, algoritmo links en `sync_agent_configs()`, validaciones en `save_dark_factory` |
+| `src-tauri/src/phone/manager.rs` | Extender `can_communicate()` con coordinator links + membership validation + actualizar error message |
+
+#### Criterio de aceptacion
+
+- [ ] `cargo check` pasa sin errores
+- [ ] `teams.json` existente se deserializa correctamente (backward compat)
+- [ ] Settings > Dark Factory muestra CRUD de layers y selector "Reports to"
+- [ ] Guardar settings propaga `supervises`/`reports_to` a per-agent `config.json`
+- [ ] Mensajes cross-team entre coordinadores vinculados funcionan via `agentscommander.exe send`
+- [ ] Mensajes cross-team entre miembros regulares siguen bloqueados
+- [ ] Link con team sin coordinator es ignorado (no produce escritura asimetrica)
+- [ ] Config editada a mano con ciclo es rechazada por `save_dark_factory`
+
+---
+
+### ETAPA 2 — Ventana + Organigrama (riesgo bajo, codigo nuevo aislado)
+
+Codigo nuevo que no afecta funcionalidad existente. Crea la ventana Dark Factory, el boton de acceso, y toda la visualizacion del organigrama.
+
+#### Pasos
+
+| Paso | Descripcion |
+|------|-------------|
 | 3 | Boton en TeamFilter + comando Rust `open_darkfactory_window` con singleton guard + inspeccionar `src-tauri/capabilities/*.json` |
-| 3b | Zoom system: agregar `darkfactoryZoom` a `AppSettings` (TS + Rust) + extender `zoom.ts` WindowType |
+| 3b | Zoom system: agregar `darkfactoryZoom` y `guideZoom` a `AppSettings` (TS + Rust) + reemplazar ternarios por `zoomKeyMap` en `zoom.ts` |
 | 4 | Scaffold ventana: `main.tsx` routing + `DarkFactoryApp` + titlebar basico |
 | 5 | `OrgChart` con layout CSS Grid de layers |
 | 6 | `TeamNode` cards con datos reales |
@@ -515,11 +556,8 @@ const saved = settings[zoomKeyMap[windowType]] as number;
 | 8 | Interactividad: hover highlights, zoom, pan |
 | 9 | Polish: animaciones, responsive, edge cases |
 
----
+#### Archivos a crear
 
-## Archivos Completos a Tocar
-
-### Crear
 | Archivo | Descripcion |
 |---------|-------------|
 | `src/darkfactory/App.tsx` | Componente principal de la ventana |
@@ -529,42 +567,50 @@ const saved = settings[zoomKeyMap[windowType]] as number;
 | `src/darkfactory/components/TeamNode.tsx` | Card de cada team |
 | `src/darkfactory/components/ConnectionLines.tsx` | Lineas SVG |
 
-### Modificar
+#### Archivos a modificar
+
 | Archivo | Cambio |
 |---------|--------|
-| `src/shared/types.ts` | `DarkFactoryLayer`, `CoordinatorLink`, extender `Team`, `DarkFactoryConfig`, `AppSettings` (+zoom) |
+| `src/shared/types.ts` (`AppSettings`) | Agregar `darkfactoryZoom: number`, `guideZoom: number` |
 | `src/shared/ipc.ts` | `DarkFactoryAPI.openWindow()` |
-| `src/shared/zoom.ts` | `"darkfactory"` en `WindowType` + mapping zoom key |
+| `src/shared/zoom.ts` | `"darkfactory"` en `WindowType` + `zoomKeyMap` lookup (reemplaza ternarios) |
 | `src/main.tsx` | Routing `"darkfactory"` → `DarkFactoryApp` |
-| `src/sidebar/components/TeamFilter.tsx` | Boton Dark Factory |
-| `src/sidebar/components/SettingsModal.tsx` | UI layers/links + **fix save `{ ...dfConfig }`** + **fix createStore init** |
-| `src-tauri/src/config/dark_factory.rs` | `#[derive(Default)]` en `AgentLocalConfig`, campos `supervises`/`reports_to`, extender `sync_agent_configs()` con algoritmo concreto, validacion en `save_dark_factory` (cycles + coordinator membership) |
-| `src-tauri/src/phone/manager.rs` | Extender `can_communicate()` con regla de coordinator links (con membership validation) + actualizar error message |
-| `src-tauri/capabilities/*.json` | Inspeccionar y agregar `"darkfactory"` a filtros de window label si existen |
-| `src-tauri/src/config/settings.rs` | `darkfactory_zoom` field |
+| `src/sidebar/components/TeamFilter.tsx` | Boton Dark Factory entre Hints y Settings |
+| `src-tauri/src/config/settings.rs` | `darkfactory_zoom` y `guide_zoom` fields |
 | `src-tauri/src/commands/window.rs` | `open_darkfactory_window` con singleton guard |
 | `src-tauri/src/lib.rs` | Registrar nuevo command |
-| `src-tauri/tauri.conf.json` | Verificar capabilities |
+| `src-tauri/capabilities/*.json` | Agregar `"darkfactory"` a filtros de window label si existen |
+
+#### Criterio de aceptacion
+
+- [ ] Boton Dark Factory visible en sidebar entre Hints y Settings
+- [ ] Click abre ventana separada (singleton — segundo click hace focus)
+- [ ] Organigrama muestra layers como columnas izq→der con teams asignados
+- [ ] Lineas SVG conectan coordinadores vinculados
+- [ ] Hover resalta conexiones del team
+- [ ] Zoom persiste entre reinicios (`darkfactoryZoom` en settings)
+- [ ] Teams sin layer no aparecen en el organigrama
+- [ ] Ventana vacia muestra CTA para configurar layers/teams
 
 ---
 
 ## Riesgos y Mitigaciones
 
-| # | Riesgo | Severidad | Mitigacion |
-|---|--------|-----------|------------|
-| 1 | `teams.json` existentes fallan al deserializar campos nuevos | **CRITICAL** | `#[serde(default)]` en todos los campos nuevos de Rust. Testeado con archivo existente antes de merge |
-| 2 | `AgentLocalConfig` struct literals no compilan al agregar campos | **CRITICAL** | `#[derive(Default)]` en `AgentLocalConfig` + usar `..Default::default()` o `unwrap_or_default()` en `set_last_coding_agent` (2 ocurrencias) y `sync_agent_configs` (1 ocurrencia) |
-| 3 | `coordinator_name` no validado contra `team.members` permite acceso cross-team no autorizado | **CRITICAL** | Validar membership en `can_communicate()` (cada check incluye `&& members.iter().any()`) y en `save_dark_factory` (sanitizar coordinator_name invalidos) |
-| 4 | `sync_agent_configs` escribe `supervises` asimetricamente si un team no tiene coordinator | **HIGH** | Regla de simetria: skip completo del link si alguno de los dos teams no tiene coordinator valido + log warning |
-| 5 | `createStore` init en SettingsModal no incluye campos nuevos | **HIGH** | Cambiar a `{ teams: [], layers: [], coordinatorLinks: [] }` |
-| 6 | Save handler descarta `layers` y `coordinatorLinks` | **HIGH** | Cambiar spread explicito a `{ ...dfConfig }` en SettingsModal |
-| 7 | `zoom.ts` ternario binario ignora nuevos window types | **HIGH** | Reemplazar ternarios por `zoomKeyMap` lookup en `debouncedSave` e `initZoom` |
-| 8 | `send_message` `team` parameter indefinido para cross-team | **MEDIUM** | Convencion: formato `"TeamA → TeamB"` para mensajes cross-team + actualizar error message |
-| 9 | Ciclos en CoordinatorLinks crean `supervises`/`reports_to` contradictorios | **MEDIUM** | Validacion en UI (layer index) + validacion backend en `save_dark_factory` (cycle check) |
-| 10 | Variables CSS inexistentes causan lineas invisibles | **MEDIUM** | Usar `--statusbar-fg` y `--statusbar-accent` (verificados en `variables.css`) |
-| 11 | Multiples instancias de la ventana causan performance hit | **LOW** | Singleton guard `get_webview_window("darkfactory")` en comando Rust |
-| 12 | Rendimiento SVG con muchos nodos | **LOW** | Debounce 100ms en resize via `ResizeObserver` |
-| 13 | Capabilities Tauri pueden excluir ventana nueva por label | **LOW** | Inspeccionar `src-tauri/capabilities/*.json` por filtros de window label y agregar `"darkfactory"` si existen |
+| # | Etapa | Riesgo | Severidad | Mitigacion |
+|---|-------|--------|-----------|------------|
+| 1 | 1 | `teams.json` existentes fallan al deserializar campos nuevos | **CRITICAL** | `#[serde(default)]` en todos los campos nuevos de Rust. Testeado con archivo existente antes de merge |
+| 2 | 1 | `AgentLocalConfig` struct literals no compilan al agregar campos | **CRITICAL** | `#[derive(Default)]` en `AgentLocalConfig` + usar `..Default::default()` o `unwrap_or_default()` en `set_last_coding_agent` (2 ocurrencias) y `sync_agent_configs` (1 ocurrencia) |
+| 3 | 1 | `coordinator_name` no validado contra `team.members` permite acceso cross-team no autorizado | **CRITICAL** | Validar membership en `can_communicate()` (cada check incluye `&& members.iter().any()`) y en `save_dark_factory` (sanitizar coordinator_name invalidos) |
+| 4 | 1 | `sync_agent_configs` escribe `supervises` asimetricamente si un team no tiene coordinator | **HIGH** | Regla de simetria: skip completo del link si alguno de los dos teams no tiene coordinator valido + log warning |
+| 5 | 1 | `createStore` init en SettingsModal no incluye campos nuevos | **HIGH** | Cambiar a `{ teams: [], layers: [], coordinatorLinks: [] }` |
+| 6 | 1 | Save handler descarta `layers` y `coordinatorLinks` | **HIGH** | Cambiar spread explicito a `{ ...dfConfig }` en SettingsModal |
+| 7 | 2 | `zoom.ts` ternario binario ignora nuevos window types | **HIGH** | Reemplazar ternarios por `zoomKeyMap` lookup en `debouncedSave` e `initZoom` |
+| 8 | 1 | `send_message` `team` parameter indefinido para cross-team | **MEDIUM** | Convencion: formato `"TeamA → TeamB"` para mensajes cross-team + actualizar error message |
+| 9 | 1 | Ciclos en CoordinatorLinks crean `supervises`/`reports_to` contradictorios | **MEDIUM** | Validacion en UI (layer index) + validacion backend en `save_dark_factory` (cycle check) |
+| 10 | 2 | Variables CSS inexistentes causan lineas invisibles | **MEDIUM** | Usar `--statusbar-fg` y `--statusbar-accent` (verificados en `variables.css`) |
+| 11 | 2 | Multiples instancias de la ventana causan performance hit | **LOW** | Singleton guard `get_webview_window("darkfactory")` en comando Rust |
+| 12 | 2 | Rendimiento SVG con muchos nodos | **LOW** | Debounce 100ms en resize via `ResizeObserver` |
+| 13 | 2 | Capabilities Tauri pueden excluir ventana nueva por label | **LOW** | Inspeccionar `src-tauri/capabilities/*.json` por filtros de window label y agregar `"darkfactory"` si existen |
 
 ---
 
