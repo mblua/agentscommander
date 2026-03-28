@@ -3,6 +3,7 @@ use tauri::Manager;
 use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
+use crate::pty::transcript::{InjectReason, TranscriptWriter};
 use crate::session::manager::SessionManager;
 
 /// Returns true when the given shell command requires a separate Enter keystroke
@@ -39,6 +40,8 @@ pub async fn inject_text_into_session(
     session_id: Uuid,
     text: &str,
     submit: bool,
+    inject_reason: InjectReason,
+    inject_sender: Option<String>,
 ) -> Result<(), String> {
     // Resolve shell without holding any lock across an await point
     let shell = {
@@ -62,6 +65,12 @@ pub async fn inject_text_into_session(
             .map_err(|e| format!("PTY write failed: {}", e))?;
     }
 
+    // Record transcript
+    {
+        let transcript = app.state::<TranscriptWriter>();
+        transcript.record_inject(session_id, text.as_bytes(), inject_reason, inject_sender, submit);
+    }
+
     // Agent CLIs (Claude, Codex): send Enter as a separate write after a delay.
     // The delay must be long enough for the agent to finish processing the pasted
     // text block and exit any internal "paste detection" mode.
@@ -74,6 +83,9 @@ pub async fn inject_text_into_session(
             .map_err(|_| "PtyManager lock poisoned".to_string())?
             .write(session_id, b"\r")
             .map_err(|e| format!("PTY Enter write failed: {}", e))?;
+
+        let transcript = app.state::<TranscriptWriter>();
+        transcript.record_inject(session_id, b"\r", InjectReason::EnterKeystroke, None, true);
     }
 
     Ok(())

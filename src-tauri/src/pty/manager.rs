@@ -9,6 +9,7 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
+use crate::pty::transcript::TranscriptWriter;
 use crate::telegram::manager::OutputSenderMap;
 
 struct PtyInstance {
@@ -37,6 +38,7 @@ pub struct PtyManager {
     idle_detector: Arc<IdleDetector>,
     git_watcher: Arc<GitWatcher>,
     pub response_watchers: ResponseWatcherMap,
+    transcript: TranscriptWriter,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -47,13 +49,14 @@ struct PtyOutputPayload {
 }
 
 impl PtyManager {
-    pub fn new(output_senders: OutputSenderMap, idle_detector: Arc<IdleDetector>, git_watcher: Arc<GitWatcher>) -> Self {
+    pub fn new(output_senders: OutputSenderMap, idle_detector: Arc<IdleDetector>, git_watcher: Arc<GitWatcher>, transcript: TranscriptWriter) -> Self {
         Self {
             ptys: Arc::new(Mutex::new(HashMap::new())),
             output_senders,
             idle_detector,
             git_watcher,
             response_watchers: Arc::new(Mutex::new(HashMap::new())),
+            transcript,
         }
     }
 
@@ -132,12 +135,16 @@ impl PtyManager {
 
         self.ptys.lock().unwrap().insert(id, instance);
 
+        // Register session for transcript recording (writes to {cwd}/.agentscommander/transcripts/)
+        self.transcript.register_session(id, cwd);
+
         // Spawn read loop that emits PTY output to the frontend,
         // feeds active Telegram bridges, and scans for response markers
         let session_id_str = id.to_string();
         let output_senders = self.output_senders.clone();
         let idle_detector = Arc::clone(&self.idle_detector);
         let response_watchers = Arc::clone(&self.response_watchers);
+        let transcript = self.transcript.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -145,6 +152,9 @@ impl PtyManager {
                     Ok(0) => break, // EOF
                     Ok(n) => {
                         let data = buf[..n].to_vec();
+
+                        // Record transcript (agent output)
+                        transcript.record_output(id, &data);
 
                         // Record PTY activity for idle detection
                         idle_detector.record_activity_with_bytes(id, n);
@@ -220,6 +230,7 @@ impl PtyManager {
         ptys.remove(&id);
         self.idle_detector.remove_session(id);
         self.git_watcher.remove_session(id);
+        self.transcript.close_session(id);
 
         // Clean up any response watchers for this session
         if let Ok(mut watchers) = self.response_watchers.lock() {

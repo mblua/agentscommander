@@ -103,7 +103,7 @@ pub async fn create_session_inner(
             root = cwd_for_init,
         );
 
-        if let Err(e) = crate::pty::inject::inject_text_into_session(&app_clone, id, &init_prompt, true).await {
+        if let Err(e) = crate::pty::inject::inject_text_into_session(&app_clone, id, &init_prompt, true, crate::pty::transcript::InjectReason::InitPrompt, None).await {
             log::warn!("Failed to inject init prompt for session {}: {}", id, e);
         }
     });

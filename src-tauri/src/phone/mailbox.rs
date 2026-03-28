@@ -574,7 +574,7 @@ impl MailboxPoller {
             }
         }
 
-        crate::pty::inject::inject_text_into_session(app, session_id, &payload, true).await?;
+        crate::pty::inject::inject_text_into_session(app, session_id, &payload, true, crate::pty::transcript::InjectReason::MessageDelivery, Some(msg.from.clone())).await?;
 
         log::info!("Injected message {} into session {} PTY", msg.id, session_id);
         let _ = tauri::Emitter::emit(
@@ -854,7 +854,7 @@ impl MailboxPoller {
             // SessionManager read-lock dropped here
         };
 
-        match crate::pty::inject::inject_text_into_session(app, session_id, &notice, false).await {
+        match crate::pty::inject::inject_text_into_session(app, session_id, &notice, false, crate::pty::transcript::InjectReason::TokenRefresh, None).await {
             Ok(()) => log::info!("[mailbox] Fresh token injected into session {}", session_id),
             Err(e) => log::warn!("[mailbox] Failed to inject fresh token into session {}: {}", session_id, e),
         }

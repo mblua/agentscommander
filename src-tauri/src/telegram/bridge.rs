@@ -704,7 +704,7 @@ async fn poll_task(
 
                             logger.log("RECV_TG", &session_id_str, &format!("from={} text={}", update.from_name, update.text));
 
-                            if let Err(e) = crate::pty::inject::inject_text_into_session(&app, session_id, &update.text, true).await {
+                            if let Err(e) = crate::pty::inject::inject_text_into_session(&app, session_id, &update.text, true, crate::pty::transcript::InjectReason::TelegramInput, Some(update.from_name.clone())).await {
                                 logger.log("PTY_ERR", &session_id_str, &e.to_string());
                                 log::error!("Failed to write Telegram input to PTY: {}", e);
                             }

@@ -17,6 +17,7 @@ use config::settings::SettingsState;
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
 use pty::manager::PtyManager;
+use pty::transcript::{TranscriptWriter, MarkerKind};
 use session::manager::SessionManager;
 use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
 use voice::tracker::{VoiceTracker, VoiceTrackingState};
@@ -105,6 +106,8 @@ pub fn run() {
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
 
+    let transcript_writer = TranscriptWriter::new();
+
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
 
     // Idle detector: emits session_idle / session_busy events.
@@ -114,9 +117,12 @@ pub fn run() {
     let app_handle_lock: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
     let handle_for_idle = Arc::clone(&app_handle_lock);
     let handle_for_busy = Arc::clone(&app_handle_lock);
+    let transcript_for_idle = transcript_writer.clone();
+    let transcript_for_busy = transcript_writer.clone();
     let idle_detector = IdleDetector::new(
         move |id| {
             log::info!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
+            transcript_for_idle.record_marker(id, MarkerKind::Idle);
             if let Some(app) = handle_for_idle.get() {
                 let _ = tauri::Emitter::emit(app, "session_idle", serde_json::json!({ "id": id.to_string() }));
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -128,6 +134,7 @@ pub fn run() {
         },
         move |id| {
             log::info!("[idle] >>> EMIT session_busy for {}", &id.to_string()[..8]);
+            transcript_for_busy.record_marker(id, MarkerKind::Busy);
             if let Some(app) = handle_for_busy.get() {
                 let _ = tauri::Emitter::emit(app, "session_busy", serde_json::json!({ "id": id.to_string() }));
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -144,6 +151,7 @@ pub fn run() {
     let session_mgr_for_exit = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
     let idle_detector_for_pty = Arc::clone(&idle_detector);
+    let transcript_for_pty = transcript_writer.clone();
 
     let tg_mgr: TelegramBridgeState =
         Arc::new(tokio::sync::Mutex::new(TelegramBridgeManager::new(output_senders)));
@@ -160,6 +168,7 @@ pub fn run() {
         .manage(voice_tracking)
         .manage(settings)
         .manage(detached_sessions.clone())
+        .manage(transcript_writer)
         .setup(move |app| {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;
@@ -176,6 +185,7 @@ pub fn run() {
                 output_senders_for_pty,
                 idle_detector_for_pty,
                 git_watcher,
+                transcript_for_pty,
             )));
             app.manage(pty_mgr);
 

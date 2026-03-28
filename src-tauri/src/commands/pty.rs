@@ -3,12 +3,14 @@ use tauri::State;
 use uuid::Uuid;
 
 use crate::pty::manager::PtyManager;
+use crate::pty::transcript::TranscriptWriter;
 use crate::voice::tracker::VoiceTrackingState;
 
 #[tauri::command]
 pub fn pty_write(
     pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
     voice_tracker: State<'_, VoiceTrackingState>,
+    transcript: State<'_, TranscriptWriter>,
     session_id: String,
     data: Vec<u8>,
 ) -> Result<(), String> {
@@ -27,7 +29,10 @@ pub fn pty_write(
         .lock()
         .unwrap()
         .write(uuid, &data)
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+    transcript.record_keyboard(uuid, &data);
+    Ok(())
 }
 
 #[tauri::command]
