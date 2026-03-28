@@ -83,8 +83,20 @@
   - `1a47becc-ed7c-4ef5-87e7-fbc0b326393c.json`
   - `4094e3a6-b980-4c42-aece-57a7baec5d92.json`
 
-### Proposed Fix Approach (TBD)
-- Add max retry count or TTL to messages
-- Move permanently undeliverable messages to `rejected/` with reason
-- Consider returning non-zero exit from CLI when destination is unknown
-- Implement exponential backoff for retries
+### Fix Implemented
+
+**Approach:** In-memory retry tracker in `MailboxPoller` with max 10 delivery attempts (~30s at 3s intervals).
+
+**Changes (single file — `src-tauri/src/phone/mailbox.rs`):**
+- Added `RetryState` struct + `retry_tracker: HashMap<PathBuf, RetryState>` to `MailboxPoller`
+- Changed `poll()` to `&mut self`
+- Poll loop now tracks attempts per message path
+- After 10 failures: calls existing `reject_message()` → moves to `outbox/rejected/` with reason
+- Added `reject_raw_file()` for unparseable messages
+- Log spam fixed: first failure = `warn!`, retries = `debug!`, final rejection = `warn!`
+
+**Verification results (DEV v0.4.15, 2026-03-27):**
+- Known agent (AGENT1→AGENT2): delivered normally via PTY injection
+- Unknown agent (AGENT1→FAKE): rejected after 10 attempts with reason file
+- No messages stuck in outbox root after fix
+- No log spam after rejection — loop stops cleanly

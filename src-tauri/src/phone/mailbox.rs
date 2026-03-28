@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -37,21 +38,31 @@ pub struct OutboxMessage {
     pub timestamp: String,
 }
 
+/// Tracks delivery attempts for a single outbox message.
+struct RetryState {
+    attempt_count: u32,
+    logged: bool,
+}
+
+const MAX_DELIVERY_ATTEMPTS: u32 = 10;
+
 /// The MailboxPoller runs as a background tokio task. It polls outbox directories
 /// for all known agent repos, validates messages, and delivers them according to mode.
 pub struct MailboxPoller {
     poll_interval: std::time::Duration,
+    retry_tracker: HashMap<PathBuf, RetryState>,
 }
 
 impl MailboxPoller {
     pub fn new() -> Self {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
+            retry_tracker: HashMap::new(),
         }
     }
 
     /// Start the poller as a background task.
-    pub fn start(self, app: tauri::AppHandle) {
+    pub fn start(mut self, app: tauri::AppHandle) {
         tauri::async_runtime::spawn(async move {
             loop {
                 if let Err(e) = self.poll(&app).await {
@@ -63,7 +74,7 @@ impl MailboxPoller {
     }
 
     /// One poll cycle: scan all repo outbox dirs, process each message.
-    async fn poll(&self, app: &tauri::AppHandle) -> Result<(), String> {
+    async fn poll(&mut self, app: &tauri::AppHandle) -> Result<(), String> {
         let settings = app.state::<SettingsState>();
         let repo_paths = {
             let cfg = settings.read().await;
@@ -115,11 +126,58 @@ impl MailboxPoller {
 
             let is_app_outbox = outbox_dir.as_path() == Path::new(&app_outbox_path);
             for path in entries {
-                if let Err(e) = self.process_message(app, &path, is_app_outbox).await {
-                    log::warn!("Failed to process outbox message {:?}: {}", path, e);
+                match self.process_message(app, &path, is_app_outbox).await {
+                    Ok(()) => {
+                        self.retry_tracker.remove(&path);
+                    }
+                    Err(e) => {
+                        let state = self.retry_tracker
+                            .entry(path.clone())
+                            .or_insert(RetryState { attempt_count: 0, logged: false });
+                        state.attempt_count += 1;
+
+                        if !state.logged {
+                            log::warn!(
+                                "Failed to process outbox message {:?} (attempt {}): {}",
+                                path, state.attempt_count, e
+                            );
+                            state.logged = true;
+                        } else {
+                            log::debug!(
+                                "Retry {} for outbox message {:?}: {}",
+                                state.attempt_count, path, e
+                            );
+                        }
+
+                        if state.attempt_count >= MAX_DELIVERY_ATTEMPTS {
+                            log::warn!(
+                                "Rejecting outbox message {:?} after {} failed attempts: {}",
+                                path, state.attempt_count, e
+                            );
+                            if let Ok(content) = std::fs::read_to_string(&path) {
+                                if let Ok(msg) = serde_json::from_str::<OutboxMessage>(&content) {
+                                    let reason = format!(
+                                        "Undeliverable after {} attempts. Last error: {}",
+                                        state.attempt_count, e
+                                    );
+                                    let _ = self.reject_message(&path, &msg, &reason).await;
+                                } else {
+                                    let reason = format!(
+                                        "Unparseable message rejected after {} attempts: {}",
+                                        state.attempt_count, e
+                                    );
+                                    let _ = Self::reject_raw_file(&path, &reason);
+                                }
+                            }
+                            self.retry_tracker.remove(&path);
+                        }
+                    }
                 }
             }
         }
+
+        // Prune tracker entries for files that no longer exist
+        self.retry_tracker.retain(|path, _| path.exists());
 
         Ok(())
     }
@@ -715,6 +773,38 @@ impl MailboxPoller {
             .map_err(|e| format!("Failed to remove outbox file: {}", e))?;
 
         log::warn!("Rejected message {}: {}", msg.id, reason);
+        Ok(())
+    }
+
+    /// Reject a raw file that cannot be parsed as OutboxMessage.
+    fn reject_raw_file(path: &Path, reason: &str) -> Result<(), String> {
+        let rejected_dir = path
+            .parent()
+            .ok_or("No parent dir")?
+            .join("rejected");
+        std::fs::create_dir_all(&rejected_dir)
+            .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
+
+        let filename = path.file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("unknown.json");
+
+        let dest = rejected_dir.join(filename);
+        std::fs::rename(path, &dest)
+            .or_else(|_| {
+                std::fs::copy(path, &dest)
+                    .and_then(|_| std::fs::remove_file(path))
+            })
+            .map_err(|e| format!("Failed to move file to rejected: {}", e))?;
+
+        let stem = Path::new(filename).file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let reason_path = rejected_dir.join(format!("{}.reason.txt", stem));
+        std::fs::write(&reason_path, reason)
+            .map_err(|_| "Failed to write reason file".to_string())?;
+
+        log::warn!("Rejected raw file {:?}: {}", path, reason);
         Ok(())
     }
 
