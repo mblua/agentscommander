@@ -333,19 +333,30 @@ fn is_tui_chrome(line: &str) -> bool {
         }
     }
 
-    // Status bar patterns from Claude Code
+    // Lines starting with 10+ consecutive ─ chars — separators with inline junk
+    if trimmed.starts_with("──────────") {
+        return true;
+    }
+
+    // Status bar patterns from Claude Code (match even without spaces — ANSI stripping
+    // can collapse "shift+tab to cycle" into "shift+tabtocycle")
     if trimmed.contains("░░░░") || trimmed.contains("███") {
         return true;
     }
     if trimmed.starts_with("[Opus") || trimmed.starts_with("Context ░") {
         return true;
     }
-    if trimmed.starts_with("⏵⏵ bypass permissions") {
+    if trimmed.contains("⏵⏵") || trimmed.contains("bypass permission") {
         return true;
     }
-
-    // "● high · /effort" and similar mode indicators
-    if trimmed.contains("· /effort") || trimmed.contains("shift+tab to cycle") {
+    if trimmed.contains("shift+tab") || trimmed.contains("· /effort") {
+        return true;
+    }
+    // Status bar content anywhere in line (collapsed from cursor positioning)
+    if trimmed.contains("[Opus ") || trimmed.contains("[Opus4") {
+        return true;
+    }
+    if trimmed.contains("resets in ") || trimmed.contains("resetsin") {
         return true;
     }
 
@@ -358,18 +369,40 @@ fn is_tui_chrome(line: &str) -> bool {
     }
 
     // Prompt line (❯) — often has huge inline content from terminal repaints
-    if trimmed.starts_with('❯') {
+    if trimmed.starts_with('❯') || trimmed.contains("❯") {
         return true;
     }
 
+    // Tool execution indicators
+    if trimmed.starts_with('⎿') {
+        return true;
+    }
+
+    // ● + spinner pattern (●Metamorphosing…, ●✢Noodling…)
+    if trimmed.starts_with('●') {
+        let after_bullet = trimmed['●'.len_utf8()..].trim();
+        if is_spinner_line(after_bullet) {
+            return true;
+        }
+    }
+
     // Short fragments (≤5 chars) — broken spinner animation frames from chunked PTY reads
-    // Real agent content is always longer than this
     if trimmed.chars().count() <= 5 {
         return true;
     }
 
     // "[Pasted text #N +M lines]" paste indicator
     if trimmed.starts_with("[Pasted text") || trimmed.starts_with("[Pastedtext") {
+        return true;
+    }
+
+    // "thought for Ns" / "ought for Ns" — thinking duration fragments
+    if trimmed.contains("thought for ") || trimmed.starts_with("ought for ") {
+        return true;
+    }
+
+    // "running stop hook" fragments
+    if trimmed.contains("running stop hook") {
         return true;
     }
 
