@@ -27,8 +27,76 @@ Crear una vista de **organigrama horizontal (izquierda a derecha)** accesible de
   - Quien puede dar indicaciones al coordinador (supervisor → coordinador)
   - A quien escala informacion el coordinador (coordinador → supervisor)
 
-### Alcance de CoordinatorLink
-`CoordinatorLink` es **puramente visual** en esta primera version — define las lineas del organigrama pero **no afecta** el routing del sistema de mensajeria (`can_communicate` en `phone/manager.rs`). El sistema de comunicacion sigue usando las reglas existentes (mismo team + coordinator gating). En una version futura se puede evaluar si los links deben propagarse a los `config.json` de cada agente para habilitar comunicacion cross-team via coordinadores.
+### Alcance de CoordinatorLink — FUNCIONAL
+
+`CoordinatorLink` es **funcional** — no solo dibuja lineas en el organigrama, sino que **habilita comunicacion cross-team** entre coordinadores vinculados y se propaga al sistema de mensajeria.
+
+#### Que habilita un CoordinatorLink
+
+Dado un link `{ supervisorTeamId: "team-cto", subordinateTeamId: "team-alpha" }`:
+
+1. **El coordinador de `team-cto`** puede enviar mensajes al **coordinador de `team-alpha`** (directivas top-down)
+2. **El coordinador de `team-alpha`** puede enviar mensajes al **coordinador de `team-cto`** (escalamiento bottom-up)
+3. **Miembros regulares** de ambos teams NO pueden comunicarse cross-team — solo los coordinadores vinculados
+
+#### Impacto en el sistema de mensajeria
+
+**`can_communicate()` en `phone/manager.rs`** — actualmente solo permite comunicacion intra-team. Se extiende con una segunda via:
+
+```rust
+// Regla actual (se mantiene):
+// from y to estan en el mismo team → permitido (con coordinator gating)
+
+// Regla nueva (se agrega):
+// from es coordinador de team A, to es coordinador de team B,
+// y existe un CoordinatorLink entre A y B → permitido
+```
+
+Logica concreta a agregar en `can_communicate`:
+```rust
+// After the existing shared_teams check, before returning false:
+// Check cross-team coordinator links
+for link in &config.coordinator_links {
+    let sup_team = config.teams.iter().find(|t| t.id == link.supervisor_team_id);
+    let sub_team = config.teams.iter().find(|t| t.id == link.subordinate_team_id);
+    if let (Some(sup), Some(sub)) = (sup_team, sub_team) {
+        let from_is_sup_coord = sup.coordinator_name.as_deref() == Some(from);
+        let from_is_sub_coord = sub.coordinator_name.as_deref() == Some(from);
+        let to_is_sup_coord = sup.coordinator_name.as_deref() == Some(to);
+        let to_is_sub_coord = sub.coordinator_name.as_deref() == Some(to);
+        // Bidireccional: supervisor coord ↔ subordinate coord
+        if (from_is_sup_coord && to_is_sub_coord)
+            || (from_is_sub_coord && to_is_sup_coord)
+        {
+            return true;
+        }
+    }
+}
+```
+
+#### Propagacion a per-agent configs
+
+**`sync_agent_configs()` en `dark_factory.rs`** — se extiende para escribir un nuevo campo en cada `AgentLocalConfig`:
+
+```rust
+// Nuevo campo en AgentLocalConfig
+#[serde(default, skip_serializing_if = "Vec::is_empty")]
+pub supervises: Vec<String>,        // teams que este coordinador supervisa
+#[serde(default, skip_serializing_if = "Vec::is_empty")]
+pub reports_to: Vec<String>,        // teams cuyos coordinadores supervisan a este
+```
+
+Esto permite que cada agente sepa, al leer su `config.json` local:
+- `supervises: ["Team Alpha", "Team Beta"]` → "puedo dar directivas a los coordinadores de estos teams"
+- `reports_to: ["CTO Team"]` → "escalo informacion al coordinador de este team"
+
+#### Archivos impactados
+
+| Archivo | Cambio |
+|---------|--------|
+| `src-tauri/src/phone/manager.rs` | Extender `can_communicate()` con regla de coordinator links |
+| `src-tauri/src/config/dark_factory.rs` | Extender `AgentLocalConfig` con `supervises`/`reports_to`, extender `sync_agent_configs()` para propagar links |
+| `src/shared/types.ts` | Agregar `supervises`/`reportsTo` a tipos si se exponen al frontend |
 
 ---
 
@@ -183,7 +251,10 @@ DarkFactoryApp
 
 El campo "Reports to" crea un `CoordinatorLink` donde `supervisorTeamId` es el team seleccionado y `subordinateTeamId` es el team actual.
 
-**Paso 1b — Auditar `sync_agent_configs`**: verificar que los nuevos campos (`layers`, `coordinator_links`) no interfieren con `sync_agent_configs()` en `dark_factory.rs:139`. Esta funcion solo itera `config.teams` asi que es seguro, pero debe confirmarse con un test manual.
+**Paso 1b — Extender `sync_agent_configs` y `can_communicate`**:
+- `sync_agent_configs()` en `dark_factory.rs:139`: extender para propagar `supervises` y `reports_to` a cada `AgentLocalConfig` basandose en `coordinator_links`
+- `can_communicate()` en `phone/manager.rs:14`: agregar segunda via de comunicacion para coordinadores vinculados por `CoordinatorLink`
+- `AgentLocalConfig` en `dark_factory.rs:29`: agregar campos `supervises: Vec<String>` y `reports_to: Vec<String>`
 
 ### Fase 2: Boton en Sidebar + Ventana Tauri + Zoom
 
@@ -323,7 +394,7 @@ El campo "Reports to" crea un `CoordinatorLink` donde `supervisorTeamId` es el t
 | Paso | Descripcion |
 |------|-------------|
 | 1 | Extender tipos TS + Rust (`DarkFactoryLayer`, `CoordinatorLink`, extender `Team`, `DarkFactoryConfig`) con atributos serde correctos |
-| 1b | Auditar `sync_agent_configs` — confirmar que nuevos campos no corrompen per-agent configs |
+| 1b | Extender `can_communicate()` + `sync_agent_configs()` + `AgentLocalConfig` para hacer CoordinatorLink funcional |
 | 2 | UI en Settings: CRUD de Layers + asignar layer a team + selector "Reports to" + **fix save handler** |
 | 3 | Boton en TeamFilter + comando Rust `open_darkfactory_window` con singleton guard |
 | 3b | Zoom system: agregar `darkfactoryZoom` a `AppSettings` (TS + Rust) + extender `zoom.ts` WindowType |
@@ -357,7 +428,8 @@ El campo "Reports to" crea un `CoordinatorLink` donde `supervisorTeamId` es el t
 | `src/main.tsx` | Routing `"darkfactory"` → `DarkFactoryApp` |
 | `src/sidebar/components/TeamFilter.tsx` | Boton Dark Factory |
 | `src/sidebar/components/SettingsModal.tsx` | UI layers/links + **fix save `{ ...dfConfig }`** |
-| `src-tauri/src/config/dark_factory.rs` | Structs Rust con `#[serde(default)]` |
+| `src-tauri/src/config/dark_factory.rs` | Structs Rust con `#[serde(default)]` + `AgentLocalConfig` con `supervises`/`reports_to` + extender `sync_agent_configs()` |
+| `src-tauri/src/phone/manager.rs` | Extender `can_communicate()` con regla de coordinator links cross-team |
 | `src-tauri/src/config/settings.rs` | `darkfactory_zoom` field |
 | `src-tauri/src/commands/window.rs` | `open_darkfactory_window` con singleton guard |
 | `src-tauri/src/lib.rs` | Registrar nuevo command |
@@ -376,13 +448,13 @@ El campo "Reports to" crea un `CoordinatorLink` donde `supervisorTeamId` es el t
 | 5 | Multiples instancias de la ventana causan performance hit | **LOW** | Singleton guard `get_webview_window("darkfactory")` en comando Rust |
 | 6 | Ciclos en CoordinatorLinks rompen layout de arbol | **LOW** | Validacion: "Reports to" solo permite teams de layers con indice menor |
 | 7 | Rendimiento SVG con muchos nodos | **LOW** | Debounce 100ms en resize via `ResizeObserver` |
-| 8 | `sync_agent_configs` podria fallar con campos desconocidos | **LOW** | Auditoria en paso 1b — funcion solo itera `config.teams`, es seguro |
+| 8 | `sync_agent_configs` debe propagar links correctamente | **MEDIUM** | Paso 1b extiende la funcion para escribir `supervises`/`reports_to` en cada agent config |
 
 ---
 
 ## Decisiones Explicitas
 
-1. **`CoordinatorLink` es cosmético**: no afecta `can_communicate` ni se propaga a per-agent `config.json`. Solo define las lineas del organigrama.
+1. **`CoordinatorLink` es funcional**: habilita comunicacion cross-team entre coordinadores vinculados. Se propaga a per-agent `config.json` (`supervises`/`reports_to`) y extiende `can_communicate()` en `phone/manager.rs`.
 2. **Orden por posicion en array**: no hay campo `order` — el indice en `layers[]` determina la posicion visual. Reordenar = mover elementos en el array.
 3. **Naming explicito**: `supervisorTeamId` / `subordinateTeamId` en vez de `from`/`to` para evitar ambiguedad.
 4. **Ventana separada**: no es un modal ni un tab — es una ventana Tauri independiente como Guide.
