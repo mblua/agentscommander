@@ -234,9 +234,57 @@ fn claude_pty_filter(speaker: &Speaker, raw_line: &str) -> Option<String> {
     // Step 4: Speaker-specific filters
     match speaker {
         Speaker::Agent => {
-            // TODO: add spinner/animation/TUI noise filters here
+            if is_spinner_line(trimmed) {
+                return None;
+            }
             Some(trimmed.to_string())
         }
         _ => Some(trimmed.to_string()),
     }
+}
+
+/// Detect spinner/animation lines from Claude Code TUI.
+/// These are short status indicators that cycle rapidly and carry no reasoned content.
+fn is_spinner_line(line: &str) -> bool {
+    // Spinner characters used by Claude Code
+    const SPINNER_CHARS: &[char] = &['✻', '✶', '✽', '✢', '·', '*', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+    // Spinner action words (always end with …)
+    const SPINNER_WORDS: &[&str] = &[
+        "Noodling", "Percolating", "Thinking", "Pondering", "Reasoning",
+        "Analyzing", "Processing", "Working", "Loading", "Generating",
+        "Compiling", "Building", "Running", "Searching", "Reading",
+        "Writing", "Editing", "Planning", "Reviewing", "Checking",
+    ];
+
+    let trimmed = line.trim();
+
+    // Single spinner character
+    if trimmed.len() <= 4 && trimmed.chars().count() == 1 {
+        if SPINNER_CHARS.contains(&trimmed.chars().next().unwrap()) {
+            return true;
+        }
+    }
+
+    // Very short fragments (1-3 chars) — typically broken spinner animation frames
+    if trimmed.chars().count() <= 3 && !trimmed.chars().any(|c| c.is_alphanumeric()) {
+        return true;
+    }
+
+    // Strip leading spinner char if present
+    let text = trimmed.trim_start_matches(SPINNER_CHARS).trim();
+
+    // "Noodling…" or "Percolating…" etc (with or without leading spinner)
+    for word in SPINNER_WORDS {
+        if text == format!("{}…", word) || text == format!("{}...", word) {
+            return true;
+        }
+    }
+
+    // Just a spinner word fragment without ellipsis (from partial animation frames)
+    if text.is_empty() {
+        return true;
+    }
+
+    false
 }
