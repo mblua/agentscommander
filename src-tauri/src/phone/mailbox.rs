@@ -45,6 +45,7 @@ struct RetryState {
 }
 
 const MAX_DELIVERY_ATTEMPTS: u32 = 10;
+const ERR_UNRESOLVABLE_AGENT: &str = "Could not resolve inbox for agent";
 
 /// The MailboxPoller runs as a background tokio task. It polls outbox directories
 /// for all known agent repos, validates messages, and delivers them according to mode.
@@ -131,45 +132,56 @@ impl MailboxPoller {
                         self.retry_tracker.remove(&path);
                     }
                     Err(e) => {
-                        let state = self.retry_tracker
-                            .entry(path.clone())
-                            .or_insert(RetryState { attempt_count: 0, logged: false });
-                        state.attempt_count += 1;
+                        let is_permanent = e.contains(ERR_UNRESOLVABLE_AGENT);
+                        let should_reject = is_permanent || {
+                            let state = self.retry_tracker
+                                .entry(path.clone())
+                                .or_insert(RetryState { attempt_count: 0, logged: false });
+                            state.attempt_count += 1;
 
-                        if !state.logged {
-                            log::warn!(
-                                "Failed to process outbox message {:?} (attempt {}): {}",
-                                path, state.attempt_count, e
-                            );
-                            state.logged = true;
-                        } else {
-                            log::debug!(
-                                "Retry {} for outbox message {:?}: {}",
-                                state.attempt_count, path, e
-                            );
-                        }
-
-                        if state.attempt_count >= MAX_DELIVERY_ATTEMPTS {
-                            log::warn!(
-                                "Rejecting outbox message {:?} after {} failed attempts: {}",
-                                path, state.attempt_count, e
-                            );
-                            if let Ok(content) = std::fs::read_to_string(&path) {
-                                if let Ok(msg) = serde_json::from_str::<OutboxMessage>(&content) {
-                                    let reason = format!(
-                                        "Undeliverable after {} attempts. Last error: {}",
-                                        state.attempt_count, e
-                                    );
-                                    let _ = self.reject_message(&path, &msg, &reason).await;
-                                } else {
-                                    let reason = format!(
-                                        "Unparseable message rejected after {} attempts: {}",
-                                        state.attempt_count, e
-                                    );
-                                    let _ = Self::reject_raw_file(&path, &reason);
-                                }
+                            if !state.logged {
+                                log::warn!(
+                                    "Failed to process outbox message {:?} (attempt {}): {}",
+                                    path, state.attempt_count, e
+                                );
+                                state.logged = true;
+                            } else {
+                                log::debug!(
+                                    "Retry {} for outbox message {:?}: {}",
+                                    state.attempt_count, path, e
+                                );
                             }
-                            self.retry_tracker.remove(&path);
+
+                            state.attempt_count >= MAX_DELIVERY_ATTEMPTS
+                        };
+
+                        if should_reject {
+                            let reason = if is_permanent {
+                                e.clone()
+                            } else {
+                                let attempts = self.retry_tracker.get(&path)
+                                    .map(|s| s.attempt_count).unwrap_or(0);
+                                format!("Undeliverable after {} attempts. Last error: {}", attempts, e)
+                            };
+
+                            let rejected = if let Ok(content) = std::fs::read_to_string(&path) {
+                                if let Ok(msg) = serde_json::from_str::<OutboxMessage>(&content) {
+                                    self.reject_message(&path, &msg, &reason).await.is_ok()
+                                } else {
+                                    Self::reject_raw_file(&path, &reason).is_ok()
+                                }
+                            } else {
+                                false
+                            };
+
+                            if rejected {
+                                self.retry_tracker.remove(&path);
+                            } else {
+                                log::error!(
+                                    "Failed to reject outbox message {:?} — will retry",
+                                    path
+                                );
+                            }
                         }
                     }
                 }
@@ -610,7 +622,7 @@ impl MailboxPoller {
         if let Some(path) = self.resolve_repo_path(agent_name, app).await {
             return Ok(PathBuf::from(path).join(".agentscommander").join("inbox"));
         }
-        Err(format!("Could not resolve inbox for agent '{}'", agent_name))
+        Err(format!("{} '{}'", ERR_UNRESOLVABLE_AGENT, agent_name))
     }
 
     /// Resolve the full filesystem path for an agent name.
