@@ -57,6 +57,16 @@ agentscommander.exe list-peers --token <TOKEN> --root "<CWD>"
 
 If your token is stale or invalid, the first failed `send` will trigger an automatic token refresh — the system injects a fresh token into your console via a `# === Token Refresh ===` block. After receiving it, retry the failed operation with the new token.
 
+### Coordinator protocol
+
+When this agent belongs to a team with a coordinator, the coordinator is the primary interface — not the user. This means:
+- **Confirmations, questions, and status updates go to the coordinator**, not to the user
+- **When you need a decision**, ask the coordinator via `send --mode wake`
+- **When you finish a task**, report completion to the coordinator
+- **When you are blocked**, escalate to the coordinator
+- Only fall back to the user when the coordinator is unreachable or the user explicitly intervenes
+- The coordinator delegates work to you and to other agents — respect the chain of command
+
 ### Environment: PROD only
 
 This agent does NOT run tests and does NOT use the DEV environment. All operations are strictly **PROD**:
