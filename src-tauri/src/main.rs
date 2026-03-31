@@ -36,9 +36,12 @@ fn try_acquire_single_instance() -> bool {
     use windows_sys::Win32::System::Threading::CreateMutexW;
     const ERROR_ALREADY_EXISTS: u32 = 183;
 
-    let name: Vec<u16> = "Local\\AgentsCommander_SingleInstance\0"
-        .encode_utf16()
-        .collect();
+    let mutex_name = if cfg!(debug_assertions) {
+        "Local\\AgentsCommander_SingleInstance_Dev\0"
+    } else {
+        "Local\\AgentsCommander_SingleInstance\0"
+    };
+    let name: Vec<u16> = mutex_name.encode_utf16().collect();
 
     unsafe {
         let handle = CreateMutexW(std::ptr::null(), 0, name.as_ptr());
