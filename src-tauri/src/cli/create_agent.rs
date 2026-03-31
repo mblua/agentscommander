@@ -110,9 +110,12 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
     if let Some(ref agent_id) = args.launch {
         let settings = config::settings::load_settings();
 
+        let agent_id_lower = agent_id.to_lowercase();
         let agent_config = settings.agents.iter().find(|a| {
             a.id.eq_ignore_ascii_case(agent_id)
                 || a.label.eq_ignore_ascii_case(agent_id)
+                || a.label.to_lowercase().contains(&agent_id_lower)
+                || a.command.to_lowercase().starts_with(&agent_id_lower)
         });
 
         match agent_config {

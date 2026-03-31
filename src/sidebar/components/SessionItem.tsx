@@ -342,18 +342,16 @@ const SessionItem: Component<{
           />
         </Portal>
       )}
-      {showContextMenu() && (
+      {showContextMenu() && hasClaude() && (
         <Portal>
           <div
             class="session-context-menu"
             style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
           >
-            <Show when={hasClaude()}>
-              <button class="session-context-option" onClick={handleExcludeClaudeMd}>
-                Exclude global CLAUDE.md
-              </button>
-            </Show>
+            <button class="session-context-option" onClick={handleExcludeClaudeMd}>
+              Exclude global CLAUDE.md
+            </button>
           </div>
         </Portal>
       )}

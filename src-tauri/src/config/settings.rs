@@ -15,7 +15,7 @@ pub struct AgentConfig {
     /// If true, run `git pull` before launching the agent
     pub git_pull_before: bool,
     /// If true, auto-generate .claude/settings.local.json with claudeMdExcludes on agent creation
-    #[serde(default = "default_true")]
+    #[serde(default)]
     pub exclude_global_claude_md: bool,
 }
 
