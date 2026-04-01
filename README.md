@@ -152,7 +152,11 @@ The `agentscommander` binary doubles as a CLI for agent-to-agent operations. Ava
 ### `send` — Send a message to another agent
 
 ```bash
+# Send a message
 agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message "..." --mode wake
+
+# Send a remote command (clear or compact)
+agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --command clear --mode wake
 ```
 
 All messages are delivered synchronously — the CLI validates routing, delivers, and confirms before exiting. There is no background queue.
@@ -162,10 +166,15 @@ All messages are delivered synchronously — the CLI validates routing, delivers
 | `--token` | No | Session token for authentication |
 | `--root` | Yes | Sender's root directory (used to derive agent name) |
 | `--to` | Yes | Destination agent name (e.g., `"0_repos/project_x"`) |
-| `--message` | Yes | Message body |
+| `--message` | No* | Message body |
+| `--command` | No* | Remote command to execute (whitelist: `clear`, `compact`) |
 | `--mode` | No | Delivery mode: `wake` (default), `active-only`, `wake-and-sleep` |
 | `--get-output` | No | Wait for and return the agent's response |
 | `--timeout` | No | Timeout in seconds for `--get-output` (default: 300) |
+
+*Either `--message` or `--command` is required (mutually exclusive).
+
+**Remote commands** (`--command`) inject a slash command (e.g. `/clear`) directly into the agent's PTY. The destination agent must be idle (green circle in the sidebar) — the command is rejected otherwise.
 
 **Delivery modes:**
 - `wake` — Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.
