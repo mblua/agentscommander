@@ -35,6 +35,12 @@ pub struct ResponseWatcher {
 /// Tracks sessions with a pending %%ACRC%% credential injection to prevent duplicates.
 pub type AcrcPendingSet = Arc<Mutex<std::collections::HashSet<Uuid>>>;
 
+/// Per-session cooldown to prevent excessive %%ACRC%% injections (e.g. feedback loops).
+pub type AcrcCooldownMap = Arc<Mutex<HashMap<Uuid, std::time::Instant>>>;
+
+/// Minimum interval between consecutive ACRC injections for the same session.
+const ACRC_COOLDOWN_SECS: u64 = 10;
+
 pub struct PtyManager {
     ptys: Arc<Mutex<HashMap<Uuid, PtyInstance>>>,
     output_senders: OutputSenderMap,
@@ -43,6 +49,7 @@ pub struct PtyManager {
     pub response_watchers: ResponseWatcherMap,
     transcript: TranscriptWriter,
     acrc_pending: AcrcPendingSet,
+    acrc_cooldowns: AcrcCooldownMap,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -52,25 +59,69 @@ struct PtyOutputPayload {
     data: Vec<u8>,
 }
 
-/// Strip ANSI CSI escape sequences (ESC [ ... final_byte) so that
-/// marker detection is not fooled by terminal color/cursor codes.
+/// Strip ANSI escape sequences so that marker detection is not fooled
+/// by terminal color/cursor codes. Handles:
+/// - CSI sequences: ESC [ ... final_byte (colors, cursor, SGR)
+/// - OSC sequences: ESC ] ... BEL/ST (title, hyperlinks, shell integration)
+/// - DCS sequences: ESC P ... ST (device control strings)
+/// - Non-CSI two-byte escapes: ESC + one byte (resets, keypad mode)
 fn strip_ansi_csi(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
         if c == '\x1b' {
-            if chars.peek() == Some(&'[') {
-                chars.next(); // skip '['
-                // Skip parameter/intermediate bytes until final byte (0x40..=0x7E)
-                while let Some(&next) = chars.peek() {
-                    chars.next();
-                    if ('@'..='~').contains(&next) {
-                        break;
+            match chars.peek() {
+                Some(&'[') => {
+                    chars.next(); // skip '['
+                    // CSI: skip parameter/intermediate bytes until final byte (0x40..=0x7E)
+                    while let Some(&next) = chars.peek() {
+                        chars.next();
+                        if ('@'..='~').contains(&next) {
+                            break;
+                        }
                     }
                 }
-            } else {
-                // Non-CSI two-byte escape (e.g. ESC c, ESC M): consume argument byte
-                chars.next();
+                Some(&']') => {
+                    chars.next(); // skip ']'
+                    // OSC: consume until BEL (\x07) or ST (ESC \)
+                    while let Some(&ch) = chars.peek() {
+                        if ch == '\x07' {
+                            chars.next();
+                            break;
+                        }
+                        if ch == '\x1b' {
+                            chars.next();
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                                break; // proper ST terminator
+                            }
+                            // ESC not followed by \ — not ST, keep consuming
+                            continue;
+                        }
+                        chars.next();
+                    }
+                }
+                Some(&'P') => {
+                    chars.next(); // skip 'P'
+                    // DCS: consume until ST (ESC \)
+                    while let Some(&ch) = chars.peek() {
+                        if ch == '\x1b' {
+                            chars.next();
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                                break; // proper ST terminator
+                            }
+                            // ESC not followed by \ — not ST, keep consuming
+                            continue;
+                        }
+                        chars.next();
+                    }
+                }
+                Some(_) => {
+                    // Non-CSI two-byte escape (e.g. ESC c, ESC M)
+                    chars.next();
+                }
+                None => {}
             }
         } else {
             out.push(c);
@@ -89,6 +140,7 @@ impl PtyManager {
             response_watchers: Arc::new(Mutex::new(HashMap::new())),
             transcript,
             acrc_pending: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            acrc_cooldowns: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -178,6 +230,7 @@ impl PtyManager {
         let response_watchers = Arc::clone(&self.response_watchers);
         let transcript = self.transcript.clone();
         let acrc_pending = Arc::clone(&self.acrc_pending);
+        let acrc_cooldowns = Arc::clone(&self.acrc_cooldowns);
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             // Trailing buffer for detecting %%ACRC%% split across reads (marker is 8 bytes)
@@ -208,10 +261,33 @@ impl PtyManager {
                                 .lines()
                                 .any(|line| strip_ansi_csi(line).trim() == "%%ACRC%%");
                             if has_standalone_marker {
-                                let already_pending = acrc_pending.lock()
-                                    .map(|mut set| !set.insert(id))
-                                    .unwrap_or(false);
-                                if !already_pending {
+                                // Cooldown check + pending check + cooldown write
+                                // in a single logical block to avoid inconsistency windows.
+                                let should_inject = {
+                                    let in_cooldown = acrc_cooldowns.lock()
+                                        .map(|map| map.get(&id)
+                                            .map(|last| last.elapsed().as_secs() < ACRC_COOLDOWN_SECS)
+                                            .unwrap_or(false))
+                                        .unwrap_or(false);
+                                    if in_cooldown {
+                                        log::debug!("[ACRC] cooldown active for session {}, skipping", id);
+                                        false
+                                    } else {
+                                        let already_pending = acrc_pending.lock()
+                                            .map(|mut set| !set.insert(id))
+                                            .unwrap_or(false);
+                                        if !already_pending {
+                                            // Set cooldown immediately after passing both checks
+                                            if let Ok(mut map) = acrc_cooldowns.lock() {
+                                                map.insert(id, std::time::Instant::now());
+                                            }
+                                            true
+                                        } else {
+                                            false
+                                        }
+                                    }
+                                };
+                                if should_inject {
                                     let app = app_handle.clone();
                                     let pending = Arc::clone(&acrc_pending);
                                     tauri::async_runtime::spawn(async move {
@@ -313,6 +389,9 @@ impl PtyManager {
         self.transcript.close_session(id);
         if let Ok(mut set) = self.acrc_pending.lock() {
             set.remove(&id);
+        }
+        if let Ok(mut map) = self.acrc_cooldowns.lock() {
+            map.remove(&id);
         }
 
         // Clean up any response watchers for this session
