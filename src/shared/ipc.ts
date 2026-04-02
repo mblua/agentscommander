@@ -221,6 +221,18 @@ export const PhoneAPI = {
     transport.invoke<void>("phone_ack_messages", { agentName, messageIds }),
 };
 
+// Agent Creator API
+export const AgentCreatorAPI = {
+  pickFolder: (defaultPath?: string) =>
+    invoke<string | null>("pick_folder", { defaultPath: defaultPath ?? null }),
+
+  createFolder: (parentPath: string, agentName: string) =>
+    invoke<string>("create_agent_folder", { parentPath, agentName }),
+
+  writeClaudeSettingsLocal: (agentPath: string) =>
+    invoke<void>("write_claude_settings_local", { agentPath }),
+};
+
 // Guide window
 export const GuideAPI = {
   open: () => transport.invoke<void>("open_guide_window"),
@@ -234,6 +246,11 @@ export function onLastPrompt(
     callback
   );
 }
+
+// Dark Factory window
+export const DarkFactoryWindowAPI = {
+  open: () => invoke<void>("open_darkfactory_window"),
+};
 
 export function onTelegramIncoming(
   callback: (data: { sessionId: string; text: string; from: string }) => void

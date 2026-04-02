@@ -76,6 +76,7 @@ export interface AgentConfig {
   command: string;
   color: string;
   gitPullBefore: boolean;
+  excludeGlobalClaudeMd: boolean;
 }
 
 export interface RepoMatch {
@@ -124,11 +125,20 @@ export interface AppSettings {
   voiceAutoExecuteDelay: number;
   sidebarZoom: number;
   terminalZoom: number;
+  guideZoom: number;
+  darkfactoryZoom: number;
   sidebarGeometry: WindowGeometry | null;
   terminalGeometry: WindowGeometry | null;
   webServerEnabled: boolean;
   webServerPort: number;
   webServerBind: string;
+}
+
+// Team grouping for sidebar
+export interface TeamSessionGroup {
+  team: Team;
+  coordinator: Session | null;
+  members: Session[];
 }
 
 // Dark Factory types
@@ -138,15 +148,29 @@ export interface TeamMember {
   path: string;
 }
 
+export interface DarkFactoryLayer {
+  id: string;
+  name: string;
+}
+
+export interface CoordinatorLink {
+  supervisorTeamId: string;
+  subordinateTeamId: string;
+}
+
 export interface Team {
   id: string;
   name: string;
   members: TeamMember[];
   coordinatorName?: string;
+  layerId?: string;
+  visible?: boolean;
 }
 
 export interface DarkFactoryConfig {
   teams: Team[];
+  layers: DarkFactoryLayer[];
+  coordinatorLinks: CoordinatorLink[];
 }
 
 // Sidebar store state
@@ -183,4 +207,34 @@ export interface AgentInfo {
   path: string;
   teams: string[];
   isCoordinatorOf: string[];
+}
+
+// Dark Factory component props
+
+export interface OrgChartProps {
+  config: DarkFactoryConfig;
+}
+
+export interface LayerColumnProps {
+  layer: DarkFactoryLayer;
+  teams: Team[];
+  hoveredTeamId: string | null;
+  onHoverTeam: (id: string | null) => void;
+  onNodeRect: (teamId: string, rect: DOMRect) => void;
+  wrapperRef: HTMLDivElement | undefined;
+}
+
+export interface TeamNodeProps {
+  team: Team;
+  highlighted: boolean;
+  onHover: (hovering: boolean) => void;
+  onNodeRect: (teamId: string, rect: DOMRect) => void;
+  wrapperRef: HTMLDivElement | undefined;
+}
+
+export interface ConnectionLinesProps {
+  links: CoordinatorLink[];
+  teams: Team[];
+  nodeRects: Map<string, DOMRect>;
+  hoveredTeamId: string | null;
 }

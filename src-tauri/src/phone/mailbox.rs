@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -35,23 +36,37 @@ pub struct OutboxMessage {
     #[serde(default)]
     pub priority: String,
     pub timestamp: String,
+    /// Remote command to execute on agent's PTY (e.g., "clear", "compact")
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command: Option<String>,
 }
+
+/// Tracks delivery attempts for a single outbox message.
+struct RetryState {
+    attempt_count: u32,
+    logged: bool,
+}
+
+const MAX_DELIVERY_ATTEMPTS: u32 = 10;
+const ERR_UNRESOLVABLE_AGENT: &str = "Could not resolve inbox for agent";
 
 /// The MailboxPoller runs as a background tokio task. It polls outbox directories
 /// for all known agent repos, validates messages, and delivers them according to mode.
 pub struct MailboxPoller {
     poll_interval: std::time::Duration,
+    retry_tracker: HashMap<PathBuf, RetryState>,
 }
 
 impl MailboxPoller {
     pub fn new() -> Self {
         Self {
             poll_interval: std::time::Duration::from_secs(3),
+            retry_tracker: HashMap::new(),
         }
     }
 
     /// Start the poller as a background task.
-    pub fn start(self, app: tauri::AppHandle) {
+    pub fn start(mut self, app: tauri::AppHandle) {
         tauri::async_runtime::spawn(async move {
             loop {
                 if let Err(e) = self.poll(&app).await {
@@ -63,7 +78,7 @@ impl MailboxPoller {
     }
 
     /// One poll cycle: scan all repo outbox dirs, process each message.
-    async fn poll(&self, app: &tauri::AppHandle) -> Result<(), String> {
+    async fn poll(&mut self, app: &tauri::AppHandle) -> Result<(), String> {
         let settings = app.state::<SettingsState>();
         let repo_paths = {
             let cfg = settings.read().await;
@@ -115,11 +130,72 @@ impl MailboxPoller {
 
             let is_app_outbox = outbox_dir.as_path() == Path::new(&app_outbox_path);
             for path in entries {
-                if let Err(e) = self.process_message(app, &path, is_app_outbox).await {
-                    log::warn!("Failed to process outbox message {:?}: {}", path, e);
+                match self.process_message(app, &path, is_app_outbox).await {
+                    Ok(()) => {
+                        self.retry_tracker.remove(&path);
+                    }
+                    Err(e) => {
+                        let is_permanent = e.contains(ERR_UNRESOLVABLE_AGENT);
+                        let should_reject = is_permanent || {
+                            let state = self.retry_tracker
+                                .entry(path.clone())
+                                .or_insert(RetryState { attempt_count: 0, logged: false });
+                            state.attempt_count += 1;
+
+                            if !state.logged {
+                                log::warn!(
+                                    "Failed to process outbox message {:?} (attempt {}): {}",
+                                    path, state.attempt_count, e
+                                );
+                                state.logged = true;
+                            } else {
+                                log::debug!(
+                                    "Retry {} for outbox message {:?}: {}",
+                                    state.attempt_count, path, e
+                                );
+                            }
+
+                            state.attempt_count >= MAX_DELIVERY_ATTEMPTS
+                        };
+
+                        if should_reject {
+                            let reason = if is_permanent {
+                                e.clone()
+                            } else {
+                                let attempts = self.retry_tracker.get(&path)
+                                    .map(|s| s.attempt_count).unwrap_or(0);
+                                format!("Undeliverable after {} attempts. Last error: {}", attempts, e)
+                            };
+
+                            let rejected = if let Ok(content) = std::fs::read_to_string(&path) {
+                                if let Ok(msg) = serde_json::from_str::<OutboxMessage>(&content) {
+                                    self.reject_message(&path, &msg, &reason).await.is_ok()
+                                } else {
+                                    Self::reject_raw_file(&path, &reason).is_ok()
+                                }
+                            } else {
+                                false
+                            };
+
+                            if rejected {
+                                self.retry_tracker.remove(&path);
+                            } else {
+                                log::error!(
+                                    "Failed to reject outbox message {:?} — will retry",
+                                    path
+                                );
+                            }
+                        }
+                    }
                 }
             }
         }
+
+        // Prune tracker entries for files that no longer exist
+        self.retry_tracker.retain(|path, _| path.exists());
+
+        // Poll session-requests directory (from create-agent CLI)
+        self.poll_session_requests(app).await;
 
         Ok(())
     }
@@ -236,16 +312,18 @@ impl MailboxPoller {
             }
         }
 
-        // Deliver based on mode
-        let mode = if msg.mode.is_empty() { "queue" } else { msg.mode.as_str() };
+        // Deliver based on mode — all modes require immediate delivery or rejection
+        let mode = if msg.mode.is_empty() { "wake" } else { msg.mode.as_str() };
         match mode {
-            "queue" => self.deliver_queue(app, &msg).await?,
             "active-only" => self.deliver_active_only(app, &msg).await?,
             "wake" => self.deliver_wake(app, &msg).await?,
             "wake-and-sleep" => self.deliver_wake_and_sleep(app, &msg).await?,
             _ => {
-                log::warn!("Unknown delivery mode '{}', falling back to queue", mode);
-                self.deliver_queue(app, &msg).await?;
+                return self.reject_message(
+                    path,
+                    &msg,
+                    &format!("Unsupported delivery mode '{}'. Valid: active-only, wake, wake-and-sleep", mode),
+                ).await;
             }
         }
 
@@ -253,34 +331,7 @@ impl MailboxPoller {
         self.move_to_delivered(path, &msg).await
     }
 
-    /// Deliver mode: queue — write to destination's inbox directory.
-    async fn deliver_queue(&self, app: &tauri::AppHandle, msg: &OutboxMessage) -> Result<(), String> {
-        log::info!("[mailbox] Delivering {} via QUEUE to {}", msg.id, msg.to);
-        let dest_inbox = self.resolve_inbox_dir(&msg.to, app).await?;
-        std::fs::create_dir_all(&dest_inbox)
-            .map_err(|e| format!("Failed to create inbox dir: {}", e))?;
-
-        let inbox_path = dest_inbox.join(format!("{}.json", msg.id));
-        let json = serde_json::to_string_pretty(msg)
-            .map_err(|e| format!("Failed to serialize message: {}", e))?;
-        std::fs::write(&inbox_path, json)
-            .map_err(|e| format!("Failed to write inbox message: {}", e))?;
-
-        log::info!("Delivered message {} to {} (queue)", msg.id, msg.to);
-        let _ = tauri::Emitter::emit(
-            app,
-            "message_delivered",
-            serde_json::json!({
-                "id": msg.id,
-                "from": msg.from,
-                "to": msg.to,
-                "mode": "queue"
-            }),
-        );
-        Ok(())
-    }
-
-    /// Deliver mode: active-only — inject into PTY if agent is active and not idle, else queue.
+    /// Deliver mode: active-only — inject into PTY if agent is active and not idle, else reject.
     async fn deliver_active_only(&self, app: &tauri::AppHandle, msg: &OutboxMessage) -> Result<(), String> {
         if let Some(session_id) = self.find_active_session(app, &msg.to).await {
             let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -297,11 +348,11 @@ impl MailboxPoller {
                 if !s.waiting_for_input && matches!(s.status, SessionStatus::Active | SessionStatus::Running) {
                     return self.inject_into_pty(app, session_id, msg, true).await;
                 }
-                log::info!("[mailbox] active-only: conditions not met, falling back to queue");
+                log::info!("[mailbox] active-only: conditions not met, rejecting");
+                return Err("Destination agent session is not active or is waiting for input".to_string());
             }
         }
-        // Fallback to queue
-        self.deliver_queue(app, msg).await
+        Err("No active session found for destination agent".to_string())
     }
 
     /// Deliver mode: wake — inject into PTY if agent is idle (waiting for input), else queue.
@@ -320,13 +371,13 @@ impl MailboxPoller {
                 if s.waiting_for_input {
                     return self.inject_into_pty(app, session_id, msg, true).await;
                 }
-                log::info!("[mailbox] wake: session not idle, falling back to queue");
+                log::info!("[mailbox] wake: session not idle, rejecting");
+                return Err("Destination agent session is active but not idle (waiting for input)".to_string());
             } else {
                 log::warn!("[mailbox] wake: session {} not in list_sessions", session_id);
             }
         }
-        // Fallback to queue
-        self.deliver_queue(app, msg).await
+        Err("No active session found for destination agent".to_string())
     }
 
     /// Deliver mode: wake-and-sleep — spawn temporary session if needed, inject, wait for idle, kill.
@@ -344,8 +395,8 @@ impl MailboxPoller {
                     return self.inject_into_pty(app, session_id, msg, true).await;
                 }
             }
-            // Session exists but is busy — queue instead
-            return self.deliver_queue(app, msg).await;
+            // Session exists but is busy — reject
+            return Err("Destination agent session exists but is busy (not idle)".to_string());
         }
 
         // No active session — need to spawn a temporary one.
@@ -368,6 +419,8 @@ impl MailboxPoller {
                 cwd,
                 Some(format!("[temp] {}", msg.to)),
                 None, // Temp session — don't update lastCodingAgent
+                None, // No agent label for temp sessions
+                true, // Skip tooling save for temp sessions
             )
             .await
             {
@@ -437,14 +490,12 @@ impl MailboxPoller {
                 }
                 Err(e) => {
                     log::warn!("wake-and-sleep: failed to spawn temp session: {}", e);
-                    // Fallback to queue
-                    self.deliver_queue(app, msg).await
+                    Err(format!("Failed to spawn temporary session for delivery: {}", e))
                 }
             }
         } else {
-            // No agent command resolved — queue
-            log::warn!("wake-and-sleep: no agent command found for {}, falling back to queue", msg.to);
-            self.deliver_queue(app, msg).await
+            log::warn!("wake-and-sleep: no agent command found for {}", msg.to);
+            Err(format!("No agent command resolved for '{}' — cannot spawn temporary session", msg.to))
         }
     }
 
@@ -462,6 +513,89 @@ impl MailboxPoller {
     ) -> Result<(), String> {
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
+        // ── Remote command path: write /<command>\r directly, no framing ──
+        if let Some(ref command) = msg.command {
+            const ALLOWED_COMMANDS: &[&str] = &["clear", "compact"];
+            if !ALLOWED_COMMANDS.contains(&command.as_str()) {
+                return Err(format!("Unsupported remote command '{}'", command));
+            }
+
+            // Precondition: agent must be idle (waiting_for_input)
+            {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                let sessions = mgr.list_sessions().await;
+                match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                    None => return Err(format!(
+                        "Session {} not found — cannot execute remote command '{}'",
+                        session_id, command
+                    )),
+                    Some(s) if !s.waiting_for_input => return Err(format!(
+                        "Cannot execute remote command '{}': agent is busy (not idle)",
+                        command
+                    )),
+                    _ => {} // idle — proceed
+                }
+            }
+
+            // Write /<command>\r directly to PTY stdin.
+            // Note: there is a small race window between the idle check above and
+            // this write — the agent could become busy on a separate task. This is
+            // inherent to a polling-based idle model and is acceptable for /clear
+            // and /compact which Claude Code processes even if mid-prompt.
+            let cmd_bytes = format!("/{}\r", command);
+            {
+                let mgr = pty_mgr.lock().map_err(|e| format!("PTY lock failed: {}", e))?;
+                mgr.write(session_id, cmd_bytes.as_bytes())
+                    .map_err(|e| format!("PTY write failed for remote command: {}", e))?;
+            }
+
+            // Record in transcript
+            {
+                let transcript = app.state::<crate::pty::transcript::TranscriptWriter>();
+                transcript.record_inject(
+                    session_id,
+                    cmd_bytes.as_bytes(),
+                    crate::pty::transcript::InjectReason::RemoteCommand,
+                    Some(msg.from.clone()),
+                    true,
+                );
+            }
+
+            log::info!(
+                "Executed remote command '{}' on session {} (from: {})",
+                command, session_id, msg.from
+            );
+
+            let _ = tauri::Emitter::emit(
+                app,
+                "message_delivered",
+                serde_json::json!({
+                    "id": msg.id,
+                    "from": msg.from,
+                    "to": msg.to,
+                    "mode": msg.mode,
+                    "command": command,
+                    "injected": true
+                }),
+            );
+
+            // If body is also present, spawn follow-up as background task.
+            // Command delivery is already complete — don't block the delivery pipeline.
+            if !msg.body.is_empty() {
+                let app_clone = app.clone();
+                let msg_clone = msg.clone();
+                tauri::async_runtime::spawn(async move {
+                    if let Err(e) = Self::inject_followup_after_idle_static(&app_clone, session_id, &msg_clone).await {
+                        log::warn!("Follow-up injection after remote command failed: {}", e);
+                    }
+                });
+            }
+
+            return Ok(());
+        }
+
+        // ── Standard message path ──
         // Only use response markers for non-interactive sessions
         let use_markers = msg.get_output && !interactive;
 
@@ -504,7 +638,7 @@ impl MailboxPoller {
             }
         }
 
-        crate::pty::inject::inject_text_into_session(app, session_id, &payload, true).await?;
+        crate::pty::inject::inject_text_into_session(app, session_id, &payload, true, crate::pty::transcript::InjectReason::MessageDelivery, Some(msg.from.clone())).await?;
 
         log::info!("Injected message {} into session {} PTY", msg.id, session_id);
         let _ = tauri::Emitter::emit(
@@ -519,6 +653,63 @@ impl MailboxPoller {
             }),
         );
         Ok(())
+    }
+
+    /// Wait for agent to become idle after a remote command, then inject body as follow-up.
+    /// Static method — can be spawned as a detached task without borrowing self.
+    async fn inject_followup_after_idle_static(
+        app: &tauri::AppHandle,
+        session_id: Uuid,
+        msg: &OutboxMessage,
+    ) -> Result<(), String> {
+        let max_wait = std::time::Duration::from_secs(30);
+        let poll = std::time::Duration::from_millis(500);
+        let start = std::time::Instant::now();
+
+        // Wait for idle (waiting_for_input = true)
+        loop {
+            if start.elapsed() >= max_wait {
+                return Err(format!(
+                    "Timeout waiting for agent to become idle after remote command ({}s)",
+                    max_wait.as_secs()
+                ));
+            }
+            tokio::time::sleep(poll).await;
+
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            let sessions = mgr.list_sessions().await;
+            match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                Some(s) if s.waiting_for_input => break,
+                Some(_) => {} // busy — keep polling
+                None => return Err(format!(
+                    "Session {} destroyed before follow-up could be injected",
+                    session_id
+                )),
+            }
+        }
+
+        // Inject the follow-up body as a standard interactive message.
+        // Note: same TOCTOU race as the command path — agent could become busy
+        // between the idle check above and this write. Acceptable for this use case.
+        let bin_path = crate::resolve_bin_label();
+        let payload = format!(
+            concat!(
+                "\n[Message from {from}] {body}\n",
+                "(To reply, run: \"{bin}\" send --token <your_token> --to \"{from}\" --message \"your reply\" --mode wake)\n\r",
+            ),
+            from = msg.from,
+            body = msg.body,
+            bin = bin_path,
+        );
+        crate::pty::inject::inject_text_into_session(
+            app,
+            session_id,
+            &payload,
+            true,
+            crate::pty::transcript::InjectReason::MessageDelivery,
+            Some(msg.from.clone()),
+        ).await
     }
 
     /// Find an active session for a given agent name (matches by working directory).
@@ -545,14 +736,6 @@ impl MailboxPoller {
         }
         log::warn!("[mailbox] No session matched for '{}'", agent_name);
         None
-    }
-
-    /// Resolve the inbox directory for a destination agent.
-    async fn resolve_inbox_dir(&self, agent_name: &str, app: &tauri::AppHandle) -> Result<PathBuf, String> {
-        if let Some(path) = self.resolve_repo_path(agent_name, app).await {
-            return Ok(PathBuf::from(path).join(".agentscommander").join("inbox"));
-        }
-        Err(format!("Could not resolve inbox for agent '{}'", agent_name))
     }
 
     /// Resolve the full filesystem path for an agent name.
@@ -639,8 +822,8 @@ impl MailboxPoller {
                 .join(".agentscommander")
                 .join("config.json");
             if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if let Ok(local_config) = serde_json::from_str::<serde_json::Value>(&content) {
-                    if let Some(last_agent) = local_config.get("lastCodingAgent").and_then(|v| v.as_str()) {
+                if let Ok(local_config) = serde_json::from_str::<crate::config::dark_factory::AgentLocalConfig>(&content) {
+                    if let Some(last_agent) = local_config.tooling.last_coding_agent.as_deref() {
                         if let Some(agent) = cfg.agents.iter().find(|a| a.id == last_agent) {
                             return Some((agent.command.clone(), vec![]));
                         }
@@ -695,7 +878,12 @@ impl MailboxPoller {
         std::fs::create_dir_all(&rejected_dir)
             .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
 
-        // Strip token
+        // Write reason file FIRST — the CLI polls for this file to detect rejection
+        let reason_path = rejected_dir.join(format!("{}.reason.txt", msg.id));
+        std::fs::write(&reason_path, reason)
+            .map_err(|_| "Failed to write reason file".to_string())?;
+
+        // Then write the stripped message JSON
         let mut stripped = msg.clone();
         stripped.token = None;
 
@@ -705,17 +893,124 @@ impl MailboxPoller {
         std::fs::write(&dest, json)
             .map_err(|e| format!("Failed to write rejected file: {}", e))?;
 
-        // Write reason
-        let reason_path = rejected_dir.join(format!("{}.reason.txt", msg.id));
-        std::fs::write(&reason_path, reason)
-            .map_err(|_| "Failed to write reason file".to_string())?;
-
         // Remove original
         std::fs::remove_file(path)
             .map_err(|e| format!("Failed to remove outbox file: {}", e))?;
 
         log::warn!("Rejected message {}: {}", msg.id, reason);
         Ok(())
+    }
+
+    /// Reject a raw file that cannot be parsed as OutboxMessage.
+    fn reject_raw_file(path: &Path, reason: &str) -> Result<(), String> {
+        let rejected_dir = path
+            .parent()
+            .ok_or("No parent dir")?
+            .join("rejected");
+        std::fs::create_dir_all(&rejected_dir)
+            .map_err(|e| format!("Failed to create rejected dir: {}", e))?;
+
+        let filename = path.file_name()
+            .and_then(|f| f.to_str())
+            .unwrap_or("unknown.json");
+
+        let dest = rejected_dir.join(filename);
+        std::fs::rename(path, &dest)
+            .or_else(|_| {
+                std::fs::copy(path, &dest)
+                    .and_then(|_| std::fs::remove_file(path))
+            })
+            .map_err(|e| format!("Failed to move file to rejected: {}", e))?;
+
+        let stem = Path::new(filename).file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("unknown");
+        let reason_path = rejected_dir.join(format!("{}.reason.txt", stem));
+        std::fs::write(&reason_path, reason)
+            .map_err(|_| "Failed to write reason file".to_string())?;
+
+        log::warn!("Rejected raw file {:?}: {}", path, reason);
+        Ok(())
+    }
+
+    /// Poll ~/.agentscommander/session-requests/ for launch requests from the CLI.
+    async fn poll_session_requests(&self, app: &tauri::AppHandle) {
+        let config_dir = match crate::config::config_dir() {
+            Some(d) => d,
+            None => return,
+        };
+        let requests_dir = config_dir.join("session-requests");
+        if !requests_dir.is_dir() {
+            return;
+        }
+
+        let entries: Vec<PathBuf> = match std::fs::read_dir(&requests_dir) {
+            Ok(rd) => rd
+                .filter_map(|e| e.ok())
+                .map(|e| e.path())
+                .filter(|p| p.extension().and_then(|s| s.to_str()) == Some("json"))
+                .collect(),
+            Err(_) => return,
+        };
+
+        for path in entries {
+            let content = match std::fs::read_to_string(&path) {
+                Ok(c) => c,
+                Err(e) => {
+                    log::warn!("[session-requests] Failed to read {:?}: {}", path, e);
+                    continue;
+                }
+            };
+
+            let request: crate::cli::create_agent::SessionRequest = match serde_json::from_str(&content) {
+                Ok(r) => r,
+                Err(e) => {
+                    log::warn!("[session-requests] Failed to parse {:?}: {}", path, e);
+                    // Delete malformed file
+                    let _ = std::fs::remove_file(&path);
+                    continue;
+                }
+            };
+
+            log::info!(
+                "[session-requests] Processing: name='{}' cwd='{}' agent='{}'",
+                request.session_name, request.cwd, request.agent_id
+            );
+
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+
+            match crate::commands::session::create_session_inner(
+                app,
+                session_mgr.inner(),
+                pty_mgr.inner(),
+                request.shell.clone(),
+                request.shell_args.clone(),
+                request.cwd.clone(),
+                Some(request.session_name.clone()),
+                Some(request.agent_id.clone()),
+                None,  // No agent label — auto-detected from shell
+                false, // Persist tooling
+            )
+            .await
+            {
+                Ok(info) => {
+                    log::info!(
+                        "[session-requests] Created session '{}' (id={})",
+                        request.session_name, info.id
+                    );
+                }
+                Err(e) => {
+                    log::error!(
+                        "[session-requests] Failed to create session '{}': {}",
+                        request.session_name, e
+                    );
+                }
+            }
+
+            // Delete processed request file regardless of success/failure
+            let _ = std::fs::remove_file(&path);
+        }
     }
 
     /// Inject the current valid token into a session's PTY so the agent can update its credentials.
@@ -752,7 +1047,7 @@ impl MailboxPoller {
             // SessionManager read-lock dropped here
         };
 
-        match crate::pty::inject::inject_text_into_session(app, session_id, &notice, false).await {
+        match crate::pty::inject::inject_text_into_session(app, session_id, &notice, false, crate::pty::transcript::InjectReason::TokenRefresh, None).await {
             Ok(()) => log::info!("[mailbox] Fresh token injected into session {}", session_id),
             Err(e) => log::warn!("[mailbox] Failed to inject fresh token into session {}: {}", session_id, e),
         }

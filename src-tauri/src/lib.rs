@@ -18,30 +18,17 @@ use config::settings::SettingsState;
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
 use pty::manager::PtyManager;
+use pty::transcript::{TranscriptWriter, MarkerKind};
 use session::manager::SessionManager;
 use telegram::manager::{OutputSenderMap, TelegramBridgeManager, TelegramBridgeState};
 use voice::tracker::{VoiceTracker, VoiceTrackingState};
 use web::auth::WebAccessToken;
 use web::broadcast::WsBroadcaster;
 
-/// Returns just the exe filename when running from an installed location (in PATH),
-/// or the full path when running in dev mode (target/debug or target/release).
+/// Returns the full path to the current executable.
 pub fn resolve_bin_label() -> String {
     std::env::current_exe()
-        .map(|p| {
-            let s = p.to_string_lossy();
-            // Dev builds live under target/debug or target/release — not in PATH
-            if s.contains("target\\debug") || s.contains("target\\release")
-                || s.contains("target/debug") || s.contains("target/release")
-            {
-                s.to_string()
-            } else {
-                // Installed build — installer adds INSTDIR to PATH
-                p.file_name()
-                    .map(|f| f.to_string_lossy().to_string())
-                    .unwrap_or_else(|| s.to_string())
-            }
-        })
+        .map(|p| p.to_string_lossy().to_string())
         .unwrap_or_else(|_| "agentscommander.exe".to_string())
 }
 
@@ -135,6 +122,8 @@ pub fn run() {
 
     let session_mgr = Arc::new(tokio::sync::RwLock::new(SessionManager::new()));
 
+    let transcript_writer = TranscriptWriter::new();
+
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
 
     // Idle detector: emits session_idle / session_busy events.
@@ -144,9 +133,12 @@ pub fn run() {
     let app_handle_lock: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
     let handle_for_idle = Arc::clone(&app_handle_lock);
     let handle_for_busy = Arc::clone(&app_handle_lock);
+    let transcript_for_idle = transcript_writer.clone();
+    let transcript_for_busy = transcript_writer.clone();
     let idle_detector = IdleDetector::new(
         move |id| {
             log::info!("[idle] >>> EMIT session_idle for {}", &id.to_string()[..8]);
+            transcript_for_idle.record_marker(id, MarkerKind::Idle);
             if let Some(app) = handle_for_idle.get() {
                 let _ = tauri::Emitter::emit(app, "session_idle", serde_json::json!({ "id": id.to_string() }));
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -158,6 +150,7 @@ pub fn run() {
         },
         move |id| {
             log::info!("[idle] >>> EMIT session_busy for {}", &id.to_string()[..8]);
+            transcript_for_busy.record_marker(id, MarkerKind::Busy);
             if let Some(app) = handle_for_busy.get() {
                 let _ = tauri::Emitter::emit(app, "session_busy", serde_json::json!({ "id": id.to_string() }));
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
@@ -172,11 +165,13 @@ pub fn run() {
 
     let session_mgr_for_git = Arc::clone(&session_mgr);
     let session_mgr_for_web = Arc::clone(&session_mgr);
+    let session_mgr_for_exit = Arc::clone(&session_mgr);
     let output_senders_for_pty = output_senders.clone();
     let idle_detector_for_pty = Arc::clone(&idle_detector);
     let broadcaster_for_pty = broadcaster.clone();
     let broadcaster_for_web = broadcaster.clone();
     let web_token_for_server = Arc::clone(&web_access_token);
+    let transcript_for_pty = transcript_writer.clone();
 
     let tg_mgr: TelegramBridgeState =
         Arc::new(tokio::sync::Mutex::new(TelegramBridgeManager::new(output_senders)));
@@ -194,6 +189,7 @@ pub fn run() {
         .manage(voice_tracking)
         .manage(settings)
         .manage(detached_sessions.clone())
+        .manage(transcript_writer)
         .setup(move |app| {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;
@@ -211,6 +207,7 @@ pub fn run() {
                 idle_detector_for_pty,
                 git_watcher,
                 Some(broadcaster_for_pty),
+                transcript_for_pty,
             )));
             app.manage(pty_mgr.clone());
 
@@ -293,6 +290,13 @@ pub fn run() {
             let _ = &sidebar;
             let _ = &terminal;
 
+            // Sync per-agent configs from teams.json so local config.json
+            // files stay up to date (team membership, coordinator roles).
+            let teams_config = config::dark_factory::load_dark_factory();
+            if let Err(e) = config::dark_factory::sync_agent_configs(&teams_config) {
+                log::warn!("Failed to sync agent configs on startup: {}", e);
+            }
+
             // Restore sessions from last run
             let persisted = sessions_persistence::load_sessions();
             if !persisted.is_empty() {
@@ -303,8 +307,10 @@ pub fn run() {
 
                 tauri::async_runtime::spawn(async move {
                     let mut active_id = None;
+                    let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
+
                     for ps in &persisted {
-                        // Skip sessions whose CWD no longer exists
+                        // Skip sessions whose CWD no longer exists (permanent failure)
                         if !std::path::Path::new(&ps.working_directory).exists() {
                             log::warn!("Skipping restore of '{}': CWD '{}' no longer exists", ps.name, ps.working_directory);
                             continue;
@@ -318,7 +324,9 @@ pub fn run() {
                             ps.shell_args.clone(),
                             ps.working_directory.clone(),
                             Some(ps.name.clone()),
-                            None, // No agent_id on restore
+                            None, // No agent_id on restore (auto-detected from shell)
+                            None, // No agent label on restore (auto-detected from shell)
+                            false, // Persist tooling on restore
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {
@@ -327,6 +335,8 @@ pub fn run() {
                             }
                             Err(e) => {
                                 log::error!("Failed to restore session '{}': {}", ps.name, e);
+                                // Preserve for next startup attempt (CWD exists, transient failure)
+                                failed_recoverable.push(ps.clone());
                             }
                         }
                     }
@@ -341,42 +351,22 @@ pub fn run() {
                         }
                     }
 
-                    // Persist the restored state (new UUIDs)
+                    // Persist restored sessions + failed-but-recoverable entries
                     let mgr: tokio::sync::RwLockReadGuard<'_, SessionManager> = session_mgr_clone.read().await;
-                    sessions_persistence::persist_current_state(&mgr).await;
+                    sessions_persistence::persist_merging_failed(&mgr, &failed_recoverable).await;
 
+                    if !failed_recoverable.is_empty() {
+                        log::warn!(
+                            "Session restore: {} sessions failed (preserved for next attempt): {:?}",
+                            failed_recoverable.len(),
+                            failed_recoverable.iter().map(|s| &s.name).collect::<Vec<_>>()
+                        );
+                    }
                     log::info!("Session restore complete");
                 });
             }
 
             Ok(())
-        })
-        .on_window_event({
-            let detached_set = detached_sessions.clone();
-            move |window, event| {
-                if let tauri::WindowEvent::Destroyed = event {
-                    let label = window.label();
-                    if label.starts_with("terminal-") {
-                        // Extract session id from label: "terminal-<uuid_no_dashes>"
-                        let id_no_dashes = &label["terminal-".len()..];
-                        // Try to reconstruct UUID from dashless form
-                        if id_no_dashes.len() == 32 {
-                            let formatted = format!(
-                                "{}-{}-{}-{}-{}",
-                                &id_no_dashes[0..8],
-                                &id_no_dashes[8..12],
-                                &id_no_dashes[12..16],
-                                &id_no_dashes[16..20],
-                                &id_no_dashes[20..32],
-                            );
-                            if let Ok(uuid) = uuid::Uuid::parse_str(&formatted) {
-                                let mut set = detached_set.lock().unwrap();
-                                set.remove(&uuid);
-                            }
-                        }
-                    }
-                }
-            }
         })
         .invoke_handler(tauri::generate_handler![
             commands::session::create_session,
@@ -400,6 +390,7 @@ pub fn run() {
             commands::window::close_detached_terminal,
             commands::window::open_in_explorer,
             commands::window::open_guide_window,
+            commands::window::open_darkfactory_window,
             commands::window::ensure_terminal_window,
             commands::dark_factory::get_dark_factory,
             commands::dark_factory::save_dark_factory,
@@ -411,7 +402,48 @@ pub fn run() {
             commands::voice::voice_mark_recording,
             commands::voice::voice_had_typing,
             commands::config::save_debug_logs,
+            commands::agent_creator::pick_folder,
+            commands::agent_creator::create_agent_folder,
+            commands::agent_creator::write_claude_settings_local,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running application");
+        .build(tauri::generate_context!())
+        .expect("error while building application")
+        .run({
+            let detached_set = detached_sessions.clone();
+            move |_app_handle, event| match event {
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Destroyed,
+                    ..
+                } => {
+                    // Cleanup detached terminal tracking
+                    if let Some(id_no_dashes) = label.strip_prefix("terminal-") {
+                        if id_no_dashes.len() == 32 {
+                            let formatted = format!(
+                                "{}-{}-{}-{}-{}",
+                                &id_no_dashes[0..8],
+                                &id_no_dashes[8..12],
+                                &id_no_dashes[12..16],
+                                &id_no_dashes[16..20],
+                                &id_no_dashes[20..32],
+                            );
+                            if let Ok(uuid) = uuid::Uuid::parse_str(&formatted) {
+                                let mut set = detached_set.lock().unwrap();
+                                set.remove(&uuid);
+                            }
+                        }
+                    }
+                }
+                tauri::RunEvent::Exit => {
+                    log::info!("[shutdown] Persisting session state...");
+                    let mgr_clone = session_mgr_for_exit.clone();
+                    tauri::async_runtime::block_on(async move {
+                        let mgr = mgr_clone.read().await;
+                        sessions_persistence::persist_current_state(&mgr).await;
+                    });
+                    log::info!("[shutdown] Session state persisted");
+                }
+                _ => {}
+            }
+        });
 }

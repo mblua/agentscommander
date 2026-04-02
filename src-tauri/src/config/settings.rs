@@ -14,6 +14,9 @@ pub struct AgentConfig {
     pub color: String,
     /// If true, run `git pull` before launching the agent
     pub git_pull_before: bool,
+    /// If true, auto-generate .claude/settings.local.json with claudeMdExcludes on agent creation
+    #[serde(default)]
+    pub exclude_global_claude_md: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -64,6 +67,12 @@ pub struct AppSettings {
     /// Zoom level for the terminal window (1.0 = 100%)
     #[serde(default = "default_zoom")]
     pub terminal_zoom: f64,
+    /// Zoom level for the guide window (1.0 = 100%)
+    #[serde(default = "default_zoom")]
+    pub guide_zoom: f64,
+    /// Zoom level for the dark factory window (1.0 = 100%)
+    #[serde(default = "default_zoom")]
+    pub darkfactory_zoom: f64,
     /// Saved geometry for the sidebar window
     #[serde(default)]
     pub sidebar_geometry: Option<WindowGeometry>,
@@ -136,6 +145,8 @@ impl Default for AppSettings {
             voice_auto_execute_delay: default_voice_delay(),
             sidebar_zoom: default_zoom(),
             terminal_zoom: default_zoom(),
+            guide_zoom: default_zoom(),
+            darkfactory_zoom: default_zoom(),
             sidebar_geometry: None,
             terminal_geometry: None,
             web_server_enabled: false,

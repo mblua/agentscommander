@@ -145,6 +145,94 @@ On Windows the default shell is `powershell.exe`; on Linux/macOS it is `/bin/bas
 }
 ```
 
+## CLI
+
+The `agentscommander` binary doubles as a CLI for agent-to-agent operations. Available subcommands:
+
+### `send` — Send a message to another agent
+
+```bash
+# Send a message
+agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message "..." --mode wake
+
+# Send a message from file (avoids shell quoting issues — recommended for PowerShell)
+agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message-file /path/to/msg.txt --mode wake
+
+# Send a remote command (clear or compact)
+agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --command clear --mode wake
+```
+
+All messages are delivered synchronously — the CLI validates routing, delivers, and confirms before exiting. There is no background queue.
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--token` | No | Session token for authentication |
+| `--root` | Yes | Sender's root directory (used to derive agent name) |
+| `--to` | Yes | Destination agent name (e.g., `"repos/my-project"`) |
+| `--message` | No* | Message body |
+| `--message-file` | No* | Path to a file containing the message body (avoids shell quoting issues) |
+| `--command` | No* | Remote command to execute (whitelist: `clear`, `compact`) |
+| `--mode` | No | Delivery mode: `wake` (default), `active-only`, `wake-and-sleep` |
+| `--get-output` | No | Wait for and return the agent's response |
+| `--timeout` | No | Timeout in seconds for `--get-output` (default: 300) |
+
+*At least one of `--message`, `--message-file`, or `--command` is required.
+
+**`--message-file`** is the recommended alternative to `--message` when the message body contains quotes, apostrophes, special characters, or spans multiple lines. It reads the message from a file, bypassing shell quoting entirely. This is especially useful for agents running under PowerShell (e.g., Codex CLI), where `--message` strings with quotes break argument parsing. If both `--message` and `--message-file` are provided, `--message-file` takes priority.
+
+**Remote commands** (`--command`) inject a slash command (e.g. `/clear`) directly into the agent's PTY. The destination agent must be idle (green circle in the sidebar) — the command is rejected otherwise.
+
+**Delivery modes:**
+- `wake` — Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.
+- `active-only` — Inject into PTY if the destination agent is actively running (not idle). Reject otherwise.
+- `wake-and-sleep` — Spawn a temporary session for the destination agent, inject the message, and destroy the session when done. Reject if the agent cannot be spawned.
+
+**Exit codes:** `0` = message delivered and confirmed, `1` = routing rejected, delivery failed, or timeout.
+
+**Pre-validation:** Before delivery, the CLI validates that the sender can reach the destination based on team membership and coordinator rules (`teams.json`). If routing would reject the message, the CLI fails immediately without writing to the outbox.
+
+### `list-peers` — List available peers
+
+```bash
+agentscommander list-peers --token <TOKEN> --root <CWD>
+```
+
+### `create-agent` — Create a new agent
+
+Creates a folder with a `CLAUDE.md` role prompt. Optionally launches it with a coding agent.
+
+```bash
+# Create only
+agentscommander create-agent --parent "C:\path\to\folder" --name "MyAgent"
+
+# Create and launch with Claude Code
+agentscommander create-agent --parent "C:\path\to\folder" --name "MyAgent" --launch claude
+```
+
+| Flag | Required | Description |
+|------|----------|-------------|
+| `--parent` | Yes | Parent directory where the agent folder will be created |
+| `--name` | Yes | Agent name (becomes a subfolder inside `--parent`) |
+| `--launch` | No | Coding agent id to launch after creation (e.g., `claude`, `codex`) |
+| `--root` | No | Caller's root directory (for context) |
+| `--token` | No | Session token (for auth context) |
+
+**What it does:**
+1. Creates `<parent>/<name>/` directory
+2. Writes `CLAUDE.md` with content: `You are the agent <parentFolder>/<name>`
+3. If `--launch` is provided, writes a session request that the running app picks up and launches automatically (~3s)
+
+**Output** (stdout, JSON):
+```json
+{
+  "agentPath": "C:\\path\\to\\folder\\MyAgent",
+  "agentName": "folder/MyAgent",
+  "claudeMd": "You are the agent folder/MyAgent",
+  "launched": true,
+  "launchAgent": "claude"
+}
+```
+
 ## Architecture
 
 ```

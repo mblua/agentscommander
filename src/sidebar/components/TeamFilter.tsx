@@ -1,6 +1,6 @@
 import { Component, For, Show, createSignal } from "solid-js";
 import { NO_TEAM } from "../../shared/constants";
-import { GuideAPI } from "../../shared/ipc";
+import { GuideAPI, DarkFactoryWindowAPI } from "../../shared/ipc";
 import { sessionsStore } from "../stores/sessions";
 import SettingsModal from "./SettingsModal";
 
@@ -24,7 +24,7 @@ const TeamFilter: Component = () => {
             >
               <option value="">All</option>
               <option value={NO_TEAM}>No team</option>
-              <For each={sessionsStore.teams}>
+              <For each={sessionsStore.teams.filter((t) => t.visible !== false)}>
                 {(team) => <option value={team.id}>{team.name}</option>}
               </For>
             </select>
@@ -47,6 +47,13 @@ const TeamFilter: Component = () => {
             title="Hints"
           >
             &#x1F4A1;
+          </button>
+          <button
+            class="toolbar-gear-btn"
+            onClick={() => DarkFactoryWindowAPI.open()}
+            title="Dark Factory"
+          >
+            &#x1F3ED;
           </button>
           <button
             class="toolbar-gear-btn"
