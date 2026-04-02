@@ -409,6 +409,13 @@ impl PtyManager {
             })
             .map_err(|e| AppError::PtyError(e.to_string()))?;
 
+        // Keep the vt100 screen parser in sync so snapshots match the new size
+        if let Ok(mut parsers) = self.screen_parsers.lock() {
+            if let Some(parser) = parsers.get_mut(&id) {
+                parser.set_size(rows, cols);
+            }
+        }
+
         Ok(())
     }
 

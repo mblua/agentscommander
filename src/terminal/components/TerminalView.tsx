@@ -8,6 +8,7 @@ import {
   onPtyOutput,
   onSessionDestroyed,
 } from "../../shared/ipc";
+import { isBrowser } from "../../shared/platform";
 import { terminalStore } from "../stores/terminal";
 import type { UnlistenFn } from "../../shared/transport";
 import "@xterm/xterm/css/xterm.css";
@@ -28,7 +29,7 @@ const TerminalView: Component = () => {
 
   const terminals = new Map<string, SessionTerminal>();
 
-  const syncViewport = (sessionId: string) => {
+  const syncViewport = (sessionId: string, skipPtyResize = false) => {
     const entry = terminals.get(sessionId);
     if (!entry) {
       return;
@@ -36,20 +37,25 @@ const TerminalView: Component = () => {
 
     entry.fitAddon.fit();
     terminalStore.setTermSize(entry.terminal.cols, entry.terminal.rows);
-    void PtyAPI.resize(sessionId, entry.terminal.cols, entry.terminal.rows);
+    if (!skipPtyResize) {
+      void PtyAPI.resize(sessionId, entry.terminal.cols, entry.terminal.rows);
+    }
   };
 
   const scheduleViewportSync = (sessionId: string) => {
+    // In browser mode, never resize the PTY — the Tauri terminal controls it.
+    // The browser is a read-only mirror; only fit xterm locally.
+    const skip = isBrowser;
     requestAnimationFrame(() => {
       if (sessionId !== activeSessionId) {
         return;
       }
 
-      syncViewport(sessionId);
+      syncViewport(sessionId, skip);
 
       requestAnimationFrame(() => {
         if (sessionId === activeSessionId) {
-          syncViewport(sessionId);
+          syncViewport(sessionId, skip);
         }
       });
     });
@@ -183,6 +189,42 @@ const TerminalView: Component = () => {
     return entry;
   };
 
+  /**
+   * Compact xterm buffer content to the top of the viewport.
+   * The vt100 screen snapshot places content at the cursor position
+   * (usually near the bottom), leaving empty rows at the top.
+   * This extracts visible lines and rewrites them from row 0.
+   */
+  const compactBufferToTop = (terminal: Terminal) => {
+    const buf = terminal.buffer.active;
+    const totalRows = terminal.rows;
+
+    // Find first and last non-empty rows
+    let firstContent = -1;
+    let lastContent = -1;
+    for (let i = 0; i < totalRows; i++) {
+      const line = buf.getLine(i);
+      if (line && line.translateToString(true).trim().length > 0) {
+        if (firstContent === -1) firstContent = i;
+        lastContent = i;
+      }
+    }
+
+    // No compaction needed if content starts at or near the top
+    if (firstContent <= 1) return;
+
+    // Extract non-empty lines (plain text — loses colors but positions correctly)
+    const lines: string[] = [];
+    for (let i = firstContent; i <= lastContent; i++) {
+      const line = buf.getLine(i);
+      lines.push(line ? line.translateToString(false) : "");
+    }
+
+    // Rewrite from top
+    terminal.reset();
+    terminal.write(lines.join("\r\n"));
+  };
+
   const showSessionTerminal = (sessionId: string) => {
     const next = createSessionTerminal(sessionId);
 
@@ -196,8 +238,23 @@ const TerminalView: Component = () => {
     next.container.hidden = false;
     activeSessionId = sessionId;
     next.terminal.focus();
-    next.terminal.scrollToBottom();
-    scheduleViewportSync(sessionId);
+
+    if (isBrowser) {
+      // Browser mode: fit xterm locally but DON'T resize the PTY.
+      // The Tauri terminal controls PTY dimensions. The browser is a
+      // read-only mirror. The vt100 snapshot at the Tauri dimensions
+      // (e.g. 24 rows) renders at the top of the larger browser xterm.
+      requestAnimationFrame(() => {
+        syncViewport(sessionId, true); // fit only, no PTY resize
+        requestAnimationFrame(() => {
+          if (sessionId !== activeSessionId) return;
+          PtyAPI.subscribe(sessionId);
+        });
+      });
+    } else {
+      next.terminal.scrollToBottom();
+      scheduleViewportSync(sessionId);
+    }
   };
 
   onMount(async () => {

@@ -65,6 +65,10 @@ export const PtyAPI = {
 
   resize: (sessionId: string, cols: number, rows: number) =>
     transport.invoke<void>("pty_resize", { sessionId, cols, rows }),
+
+  /** Request screen snapshot replay for late-joining browser clients. */
+  subscribe: (sessionId: string) =>
+    transport.invoke<void>("subscribe_session", { sessionId }),
 };
 
 export const SettingsAPI = {
