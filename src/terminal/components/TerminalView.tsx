@@ -6,6 +6,7 @@ import {
   PtyAPI,
   SessionAPI,
   onPtyOutput,
+  onPtyResized,
   onSessionDestroyed,
 } from "../../shared/ipc";
 import { isBrowser } from "../../shared/platform";
@@ -18,6 +19,8 @@ interface SessionTerminal {
   terminal: Terminal;
   fitAddon: FitAddon;
   inputBuffer: string;
+  ptyRows?: number;
+  ptyCols?: number;
 }
 
 const TerminalView: Component = () => {
@@ -25,6 +28,7 @@ const TerminalView: Component = () => {
   let activeSessionId: string | null = null;
   let resizeObserver: ResizeObserver | null = null;
   let unlistenPtyOutput: UnlistenFn | null = null;
+  let unlistenPtyResized: UnlistenFn | null = null;
   let unlistenSessionDestroyed: UnlistenFn | null = null;
 
   const terminals = new Map<string, SessionTerminal>();
@@ -43,19 +47,28 @@ const TerminalView: Component = () => {
   };
 
   const scheduleViewportSync = (sessionId: string) => {
-    // In browser mode, never resize the PTY — the Tauri terminal controls it.
-    // The browser is a read-only mirror; only fit xterm locally.
-    const skip = isBrowser;
+    if (isBrowser) {
+      // Browser mode: recalculate font size for locked PTY dimensions
+      requestAnimationFrame(() => {
+        if (sessionId !== activeSessionId) return;
+        const entry = terminals.get(sessionId);
+        if (entry?.ptyRows && entry?.ptyCols) {
+          lockToPtyDimensions(entry, entry.ptyRows, entry.ptyCols);
+        }
+      });
+      return;
+    }
+
     requestAnimationFrame(() => {
       if (sessionId !== activeSessionId) {
         return;
       }
 
-      syncViewport(sessionId, skip);
+      syncViewport(sessionId);
 
       requestAnimationFrame(() => {
         if (sessionId === activeSessionId) {
-          syncViewport(sessionId, skip);
+          syncViewport(sessionId);
         }
       });
     });
@@ -190,39 +203,31 @@ const TerminalView: Component = () => {
   };
 
   /**
-   * Compact xterm buffer content to the top of the viewport.
-   * The vt100 screen snapshot places content at the cursor position
-   * (usually near the bottom), leaving empty rows at the top.
-   * This extracts visible lines and rewrites them from row 0.
+   * Lock the browser xterm.js to exact PTY dimensions, scaling font size
+   * so the terminal fills the container. This makes the browser a true
+   * 1:1 mirror — all absolute cursor positioning works correctly.
    */
-  const compactBufferToTop = (terminal: Terminal) => {
-    const buf = terminal.buffer.active;
-    const totalRows = terminal.rows;
+  const lockToPtyDimensions = (entry: SessionTerminal, ptyRows: number, ptyCols: number) => {
+    const rect = entry.container.getBoundingClientRect();
+    if (rect.height === 0 || rect.width === 0) return;
 
-    // Find first and last non-empty rows
-    let firstContent = -1;
-    let lastContent = -1;
-    for (let i = 0; i < totalRows; i++) {
-      const line = buf.getLine(i);
-      if (line && line.translateToString(true).trim().length > 0) {
-        if (firstContent === -1) firstContent = i;
-        lastContent = i;
-      }
-    }
+    // Use fitAddon to measure how many cells fit at the current font size
+    const dims = entry.fitAddon.proposeDimensions();
+    if (!dims || dims.cols === 0 || dims.rows === 0) return;
 
-    // No compaction needed if content starts at or near the top
-    if (firstContent <= 1) return;
+    const currentFontSize = entry.terminal.options.fontSize || 14;
 
-    // Extract non-empty lines (plain text — loses colors but positions correctly)
-    const lines: string[] = [];
-    for (let i = firstContent; i <= lastContent; i++) {
-      const line = buf.getLine(i);
-      lines.push(line ? line.translateToString(false) : "");
-    }
+    // Scale font so that ptyCols/ptyRows fill the container
+    const scaleCols = dims.cols / ptyCols;
+    const scaleRows = dims.rows / ptyRows;
+    const scale = Math.min(scaleCols, scaleRows);
 
-    // Rewrite from top
-    terminal.reset();
-    terminal.write(lines.join("\r\n"));
+    const newFontSize = Math.max(Math.floor(currentFontSize * scale), 6);
+    entry.terminal.options.fontSize = newFontSize;
+    entry.terminal.resize(ptyCols, ptyRows);
+
+    entry.ptyRows = ptyRows;
+    entry.ptyCols = ptyCols;
   };
 
   const showSessionTerminal = (sessionId: string) => {
@@ -240,15 +245,14 @@ const TerminalView: Component = () => {
     next.terminal.focus();
 
     if (isBrowser) {
-      // Browser mode: fit xterm locally but DON'T resize the PTY.
-      // The Tauri terminal controls PTY dimensions. The browser is a
-      // read-only mirror. The vt100 snapshot at the Tauri dimensions
-      // (e.g. 24 rows) renders at the top of the larger browser xterm.
+      // Browser mode: dimension-locked mirror. Lock xterm to exact PTY
+      // dimensions so all absolute cursor positioning works correctly.
+      // Font size is scaled to fill the container visually.
       requestAnimationFrame(() => {
-        syncViewport(sessionId, true); // fit only, no PTY resize
-        requestAnimationFrame(() => {
-          if (sessionId !== activeSessionId) return;
-          PtyAPI.subscribe(sessionId);
+        if (sessionId !== activeSessionId) return;
+        PtyAPI.subscribe(sessionId).then((size) => {
+          if (sessionId !== activeSessionId || !size) return;
+          lockToPtyDimensions(next, size.rows, size.cols);
         });
       });
     } else {
@@ -285,6 +289,15 @@ const TerminalView: Component = () => {
     unlistenSessionDestroyed = await onSessionDestroyed(({ id }) => {
       disposeSessionTerminal(id);
     });
+
+    if (isBrowser) {
+      unlistenPtyResized = await onPtyResized(({ sessionId, rows, cols }) => {
+        const entry = terminals.get(sessionId);
+        if (entry) {
+          lockToPtyDimensions(entry, rows, cols);
+        }
+      });
+    }
   });
 
   createEffect(() => {
@@ -306,6 +319,7 @@ const TerminalView: Component = () => {
 
   onCleanup(() => {
     unlistenPtyOutput?.();
+    unlistenPtyResized?.();
     unlistenSessionDestroyed?.();
     resizeObserver?.disconnect();
 

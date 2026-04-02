@@ -416,6 +416,15 @@ impl PtyManager {
             }
         }
 
+        // Broadcast resize to WS clients so browser mirrors can update dimensions
+        if let Some(ref bc) = self.ws_broadcaster {
+            bc.broadcast_event("pty_resized", &serde_json::json!({
+                "sessionId": id.to_string(),
+                "cols": cols,
+                "rows": rows,
+            }));
+        }
+
         Ok(())
     }
 
@@ -454,6 +463,13 @@ impl PtyManager {
         let screen = parser.screen();
         // contents_formatted returns ANSI escape sequences that reproduce the screen state
         Some(screen.contents_formatted())
+    }
+
+    /// Get the current PTY dimensions (rows, cols) from the vt100 parser.
+    pub fn get_pty_size(&self, id: Uuid) -> Option<(u16, u16)> {
+        let parsers = self.screen_parsers.lock().ok()?;
+        let parser = parsers.get(&id)?;
+        Some(parser.screen().size())
     }
 
     /// Register a watcher for response markers on a session's output.

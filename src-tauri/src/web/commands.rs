@@ -177,13 +177,30 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
             let session_id = require_str(args, "sessionId")?;
             let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-            let snapshot = state.pty_mgr.lock().unwrap().get_screen_snapshot(uuid);
+            let pty_mgr = state.pty_mgr.lock().unwrap();
+            let snapshot = pty_mgr.get_screen_snapshot(uuid);
+            let size = pty_mgr.get_pty_size(uuid);
+            drop(pty_mgr);
+
             if let Some(data) = snapshot {
-                // Send as a pty_output event so the client renders it
                 state.broadcaster.broadcast_pty_output(&session_id, &data);
             }
 
-            Ok(json!(null))
+            match size {
+                Some((rows, cols)) => Ok(json!({ "rows": rows, "cols": cols })),
+                None => Ok(json!(null)),
+            }
+        }
+
+        "get_pty_size" => {
+            let session_id = require_str(args, "sessionId")?;
+            let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
+
+            let size = state.pty_mgr.lock().unwrap().get_pty_size(uuid);
+            match size {
+                Some((rows, cols)) => Ok(json!({ "rows": rows, "cols": cols })),
+                None => Err(format!("Session not found: {}", session_id)),
+            }
         }
 
         // --- Window commands (no-ops for web clients) ---

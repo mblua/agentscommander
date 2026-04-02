@@ -66,9 +66,14 @@ export const PtyAPI = {
   resize: (sessionId: string, cols: number, rows: number) =>
     transport.invoke<void>("pty_resize", { sessionId, cols, rows }),
 
-  /** Request screen snapshot replay for late-joining browser clients. */
+  /** Request screen snapshot replay for late-joining browser clients.
+   *  Returns PTY dimensions so the browser can mirror them. */
   subscribe: (sessionId: string) =>
-    transport.invoke<void>("subscribe_session", { sessionId }),
+    transport.invoke<{ rows: number; cols: number } | null>("subscribe_session", { sessionId }),
+
+  /** Get current PTY dimensions (rows, cols). */
+  getPtySize: (sessionId: string) =>
+    transport.invoke<{ rows: number; cols: number }>("get_pty_size", { sessionId }),
 };
 
 export const SettingsAPI = {
@@ -161,6 +166,15 @@ export const TelegramAPI = {
   sendTest: (token: string) =>
     transport.invoke<number>("telegram_send_test", { token }),
 };
+
+export function onPtyResized(
+  callback: (data: { sessionId: string; rows: number; cols: number }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ sessionId: string; rows: number; cols: number }>(
+    "pty_resized",
+    callback
+  );
+}
 
 export function onSessionGitBranch(
   callback: (data: { sessionId: string; branch: string | null }) => void
