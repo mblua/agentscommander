@@ -64,6 +64,8 @@ async fn dispatch_inner(state: &WsState, cmd: &str, args: &Value) -> Result<Valu
                 cwd,
                 session_name,
                 agent_id,
+                None, // agent_label (auto-detected)
+                false, // skip_tooling_save
             ).await?;
 
             serde_json::to_value(info).map_err(|e| e.to_string())
