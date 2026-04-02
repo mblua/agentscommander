@@ -77,7 +77,7 @@
 }
 
 /* Ensure xterm fills the terminal container */
-.browser-terminal .terminal-container {
+.browser-terminal .terminal-host {
   flex: 1;
   min-height: 0;
 }
