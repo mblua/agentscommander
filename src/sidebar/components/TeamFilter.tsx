@@ -6,6 +6,7 @@ import SettingsModal from "./SettingsModal";
 
 const TeamFilter: Component = () => {
   const [showSettings, setShowSettings] = createSignal(false);
+  const [isLight, setIsLight] = createSignal(true);
 
   const handleChange = (e: Event) => {
     const value = (e.target as HTMLSelectElement).value;
@@ -47,6 +48,21 @@ const TeamFilter: Component = () => {
             title="Hints"
           >
             &#x1F4A1;
+          </button>
+          <button
+            class="toolbar-gear-btn"
+            onClick={() => {
+              const next = !isLight();
+              setIsLight(next);
+              if (next) {
+                document.documentElement.classList.add("light-theme");
+              } else {
+                document.documentElement.classList.remove("light-theme");
+              }
+            }}
+            title="Toggle theme"
+          >
+            {isLight() ? "\u2600\uFE0F" : "\uD83C\uDF19"}
           </button>
           <button
             class="toolbar-gear-btn"

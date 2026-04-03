@@ -58,6 +58,7 @@ const TerminalApp: Component<TerminalAppProps> = (props) => {
   };
 
   onMount(async () => {
+    document.documentElement.classList.add("light-theme");
     shortcutHandler = registerShortcuts();
     cleanupZoom = await initZoom("terminal");
     cleanupGeometry = await initWindowGeometry("terminal");

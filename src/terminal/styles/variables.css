@@ -31,3 +31,19 @@
   /* Transitions */
   --transition-fast: 150ms ease-out;
 }
+
+html.light-theme {
+  --terminal-bg: #f5f5f7;
+  --terminal-fg: #1a1a2e;
+  --terminal-cursor: #0066cc;
+  --terminal-selection: rgba(0, 102, 204, 0.2);
+
+  --titlebar-bg: #e8e8ec;
+  --titlebar-fg: #4b5563;
+  --titlebar-btn-hover: rgba(0, 0, 0, 0.06);
+  --titlebar-btn-close-hover: #e81123;
+
+  --statusbar-bg: #e8e8ec;
+  --statusbar-fg: #6b7280;
+  --statusbar-accent: #0066cc;
+}

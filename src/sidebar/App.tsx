@@ -57,6 +57,7 @@ const SidebarApp: Component = () => {
   };
 
   onMount(async () => {
+    document.documentElement.classList.add("light-theme");
     shortcutHandler = registerShortcuts();
     cleanupZoom = await initZoom("sidebar");
     cleanupGeometry = await initWindowGeometry("sidebar");
