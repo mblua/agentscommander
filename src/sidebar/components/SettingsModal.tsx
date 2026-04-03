@@ -464,6 +464,34 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
       </div>
 
       <div class="settings-section">
+        <div class="settings-section-title">Web Remote Access</div>
+        <label class="settings-checkbox-field">
+          <input
+            type="checkbox"
+            class="settings-checkbox"
+            checked={settings.data!.webServerEnabled}
+            onChange={(e) =>
+              updateField("webServerEnabled", e.currentTarget.checked)
+            }
+          />
+          <span>Enable web server (requires restart)</span>
+        </label>
+        <Show when={settings.data!.webServerEnabled}>
+          <button
+            class="settings-add-btn"
+            style="margin-top: 6px"
+            onClick={() => {
+              SettingsAPI.openWebRemote().catch((err) =>
+                console.error("Failed to open web remote:", err)
+              );
+            }}
+          >
+            Open in Browser
+          </button>
+        </Show>
+      </div>
+
+      <div class="settings-section">
         <div class="settings-section-title">Agents Folders and Parent Folders</div>
         <For each={settings.data!.repoPaths}>
           {(path, i) => (

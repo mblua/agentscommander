@@ -402,6 +402,7 @@ pub fn run() {
             commands::voice::voice_mark_recording,
             commands::voice::voice_had_typing,
             commands::config::save_debug_logs,
+            commands::config::open_web_remote,
             commands::agent_creator::pick_folder,
             commands::agent_creator::create_agent_folder,
             commands::agent_creator::write_claude_settings_local,

@@ -80,6 +80,7 @@ export const SettingsAPI = {
   get: () => transport.invoke<AppSettings>("get_settings"),
   update: (settings: AppSettings) =>
     transport.invoke<void>("update_settings", { newSettings: settings }),
+  openWebRemote: () => transport.invoke<void>("open_web_remote"),
 };
 
 export const ReposAPI = {
