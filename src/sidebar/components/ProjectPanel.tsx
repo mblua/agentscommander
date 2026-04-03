@@ -6,6 +6,13 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import SessionItem from "./SessionItem";
 
+/** Derive the repo name from a replica's repoPaths (strip 'repo-' prefix) */
+function replicaRepoName(replica: AcAgentReplica): string | undefined {
+  if (!replica.repoPaths?.length) return undefined;
+  const dirName = replica.repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
+  return dirName.startsWith("repo-") ? dirName.slice(5) : dirName;
+}
+
 /** Build the session name used to link a replica to its session */
 function replicaSessionName(wg: AcWorkgroup, replica: AcAgentReplica): string {
   return `${wg.name}/${replica.name}`;
@@ -120,13 +127,8 @@ const ProjectPanel: Component = () => {
                                 when={session()}
                                 fallback={
                                   (() => {
-                                    const repoCount = () => replica.repoPaths.length;
-                                    const branchLabel = () => {
-                                      if (repoCount() === 1) return replica.repoBranch ?? "1 repo";
-                                      if (repoCount() > 1) return "multi-repo";
-                                      return null;
-                                    };
                                     const dotClass = () => replicaDotClass(wg, replica);
+                                    const repoName = () => replicaRepoName(replica);
                                     return (
                                       <div
                                         class="ac-discovery-item"
@@ -137,10 +139,9 @@ const ProjectPanel: Component = () => {
                                         <div class="ac-discovery-item-info">
                                           <span class="ac-discovery-item-name">{replica.name}</span>
                                           <div class="ac-discovery-badges">
-                                            <Show when={branchLabel()}>
-                                              <span class="ac-discovery-badge branch">{branchLabel()}</span>
+                                            <Show when={repoName()}>
+                                              <span class="ac-discovery-badge branch">{repoName()}</span>
                                             </Show>
-                                            <span class="ac-discovery-badge team">replica</span>
                                           </div>
                                         </div>
                                       </div>
@@ -148,12 +149,24 @@ const ProjectPanel: Component = () => {
                                   })()
                                 }
                               >
-                                {(s) => (
-                                  <SessionItem
-                                    session={s()}
-                                    isActive={s().id === sessionsStore.activeId}
-                                  />
-                                )}
+                                {(s) => {
+                                  const patched = () => {
+                                    const sess = s();
+                                    if (sess.gitBranch && !sess.gitBranch.includes("/")) {
+                                      const repoName = replicaRepoName(replica);
+                                      if (repoName) {
+                                        return { ...sess, gitBranch: `${repoName}/${sess.gitBranch}` };
+                                      }
+                                    }
+                                    return sess;
+                                  };
+                                  return (
+                                    <SessionItem
+                                      session={patched()}
+                                      isActive={s().id === sessionsStore.activeId}
+                                    />
+                                  );
+                                }}
                               </Show>
                             );
                           }}
