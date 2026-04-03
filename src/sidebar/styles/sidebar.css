@@ -2430,6 +2430,26 @@ html, body, #root {
   padding: 4px var(--spacing-md) 4px calc(var(--spacing-md) + 6px);
 }
 
+.ac-wg-header--collapsible {
+  flex-direction: row;
+  align-items: center;
+  gap: 4px;
+  cursor: pointer;
+  user-select: none;
+  padding: 4px var(--spacing-md);
+}
+
+.ac-wg-header--collapsible:hover .ac-wg-name {
+  color: var(--sidebar-fg);
+}
+
+.ac-wg-header-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
 .ac-wg-name {
   font-size: var(--font-size-sm);
   font-weight: 600;

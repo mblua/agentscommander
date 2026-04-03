@@ -53,64 +53,98 @@ const ProjectPanel: Component = () => {
             <div class="project-content">
               {/* Workgroups */}
               <For each={proj().workgroups}>
-                {(wg) => (
-                  <div class="ac-wg-group">
-                    <div class="ac-wg-header" title={wg.path}>
-                      <span class="ac-wg-name">{wg.name}</span>
-                      <Show when={wg.brief}>
-                        <span class="ac-wg-brief">{wg.brief}</span>
+                {(wg) => {
+                  const [wgCollapsed, setWgCollapsed] = createSignal(false);
+                  return (
+                    <div class="ac-wg-group">
+                      <div
+                        class="ac-wg-header ac-wg-header--collapsible"
+                        title={wg.path}
+                        onClick={() => setWgCollapsed((c) => !c)}
+                      >
+                        <span class="ac-discovery-chevron" classList={{ collapsed: wgCollapsed() }}>
+                          &#x25BE;
+                        </span>
+                        <div class="ac-wg-header-text">
+                          <span class="ac-wg-name">{wg.name}</span>
+                          <Show when={wg.brief}>
+                            <span class="ac-wg-brief">{wg.brief}</span>
+                          </Show>
+                        </div>
+                      </div>
+                      <Show when={!wgCollapsed()}>
+                        <For each={wg.agents}>
+                          {(replica) => {
+                            const repoCount = () => replica.repoPaths.length;
+                            const branchLabel = () => {
+                              if (repoCount() === 1) return replica.repoBranch ?? "1 repo";
+                              if (repoCount() > 1) return "multi-repo";
+                              return null;
+                            };
+                            return (
+                              <div
+                                class="ac-discovery-item"
+                                onClick={() => handleReplicaClick(replica, wg)}
+                                title={replica.path}
+                              >
+                                <div class="ac-discovery-item-info">
+                                  <span class="ac-discovery-item-name">{replica.name}</span>
+                                  <div class="ac-discovery-badges">
+                                    <Show when={branchLabel()}>
+                                      <span class="ac-discovery-badge branch">{branchLabel()}</span>
+                                    </Show>
+                                    <span class="ac-discovery-badge team">replica</span>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }}
+                        </For>
                       </Show>
                     </div>
-                    <For each={wg.agents}>
-                      {(replica) => {
-                        const repoCount = () => replica.repoPaths.length;
-                        const branchLabel = () => {
-                          if (repoCount() === 1) return replica.repoBranch ?? "1 repo";
-                          if (repoCount() > 1) return "multi-repo";
-                          return null;
-                        };
-                        return (
-                          <div
-                            class="ac-discovery-item"
-                            onClick={() => handleReplicaClick(replica, wg)}
-                            title={replica.path}
-                          >
-                            <div class="ac-discovery-item-info">
-                              <span class="ac-discovery-item-name">{replica.name}</span>
-                              <div class="ac-discovery-badges">
-                                <Show when={branchLabel()}>
-                                  <span class="ac-discovery-badge branch">{branchLabel()}</span>
-                                </Show>
-                                <span class="ac-discovery-badge team">replica</span>
+                  );
+                }}
+              </For>
+              {/* Agent Matrix */}
+              <Show when={proj().agents.length > 0}>
+                {(() => {
+                  const [matrixCollapsed, setMatrixCollapsed] = createSignal(false);
+                  return (
+                    <div class="ac-wg-group">
+                      <div
+                        class="ac-wg-header ac-wg-header--collapsible"
+                        onClick={() => setMatrixCollapsed((c) => !c)}
+                      >
+                        <span class="ac-discovery-chevron" classList={{ collapsed: matrixCollapsed() }}>
+                          &#x25BE;
+                        </span>
+                        <div class="ac-wg-header-text">
+                          <span class="ac-wg-name">Agent Matrix</span>
+                        </div>
+                      </div>
+                      <Show when={!matrixCollapsed()}>
+                        <For each={proj().agents}>
+                          {(agent) => (
+                            <div
+                              class="ac-discovery-item"
+                              onClick={() => handleAgentClick(agent)}
+                              title={agent.path}
+                            >
+                              <div class="ac-discovery-item-info">
+                                <span class="ac-discovery-item-name">
+                                  {agent.name.slice(agent.name.lastIndexOf("/") + 1)}
+                                </span>
+                                <div class="ac-discovery-badges">
+                                  <span class="ac-discovery-badge team">matrix</span>
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        );
-                      }}
-                    </For>
-                  </div>
-                )}
-              </For>
-              {/* Agents (non-workgroup) */}
-              <Show when={proj().agents.length > 0}>
-                <For each={proj().agents}>
-                  {(agent) => (
-                    <div
-                      class="ac-discovery-item"
-                      onClick={() => handleAgentClick(agent)}
-                      title={agent.path}
-                    >
-                      <div class="ac-discovery-item-info">
-                        <span class="ac-discovery-item-name">
-                          <span class="ac-discovery-prefix">
-                            {agent.name.slice(0, agent.name.lastIndexOf("/") + 1)}
-                          </span>
-                          {agent.name.slice(agent.name.lastIndexOf("/") + 1)}
-                        </span>
-                      </div>
+                          )}
+                        </For>
+                      </Show>
                     </div>
-                  )}
-                </For>
+                  );
+                })()}
               </Show>
             </div>
           </Show>
