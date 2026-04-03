@@ -1032,7 +1032,7 @@ impl MailboxPoller {
                         "# New session token: {token}\n",
                         "#\n",
                         "# Updated send command:\n",
-                        "#   \"agentscommander.exe\" send --token {token} --root \"{root}\" --to \"<agent_name>\" --message \"...\" --mode wake\n",
+                        "#   \"agentscommander-new.exe\" send --token {token} --root \"{root}\" --to \"<agent_name>\" --message \"...\" --mode wake\n",
                         "# === End Token Refresh ===\n",
                         "\r",
                     ),

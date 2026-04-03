@@ -130,10 +130,10 @@ You are running inside an AgentsCommander session — a terminal session manager
 
 ## CLI executable
 
-`agentscommander.exe` is **not** in PATH. Use the full path via the `LOCALAPPDATA` environment variable (the directory name contains a space, so always quote):
+`agentscommander-new.exe` is **not** in PATH. Use the full path via the `LOCALAPPDATA` environment variable (the directory name contains a space, so always quote):
 
 ```
-"$LOCALAPPDATA/Agents Commander/agentscommander.exe"
+"$LOCALAPPDATA/Agents Commander New/agentscommander-new.exe"
 ```
 
 ## Self-discovery via --help
@@ -141,9 +141,9 @@ You are running inside an AgentsCommander session — a terminal session manager
 The CLI `--help` output is the **primary and authoritative reference** for learning how to use AgentsCommander. Before guessing flags, modes, or behavior, always consult it:
 
 ```
-agentscommander.exe --help                  # List all subcommands
-agentscommander.exe send --help             # Full docs for sending messages
-agentscommander.exe list-peers --help       # Full docs for discovering peers
+agentscommander-new.exe --help                  # List all subcommands
+agentscommander-new.exe send --help             # Full docs for sending messages
+agentscommander-new.exe list-peers --help       # Full docs for discovering peers
 ```
 
 The `--help` text documents every flag, its purpose, accepted values, priority rules, delivery modes, and discovery flows. It is designed to be self-contained — you should not need README, CLAUDE.md, or external docs to use any command correctly.
@@ -171,7 +171,7 @@ Your agent root is your current working directory.
 Fire-and-forget (do NOT use --get-output):
 
 ```
-agentscommander.exe send --token <YOUR_TOKEN> --root "<YOUR_ROOT>" --to "<agent_name>" --message "..." --mode wake
+agentscommander-new.exe send --token <YOUR_TOKEN> --root "<YOUR_ROOT>" --to "<agent_name>" --message "..." --mode wake
 ```
 
 The other agent will reply back via your console as a new message.
@@ -181,6 +181,6 @@ After sending, you can stay idle and wait for the reply to arrive.
 ### List available peers
 
 ```
-agentscommander.exe list-peers --token <YOUR_TOKEN> --root "<YOUR_ROOT>"
+agentscommander-new.exe list-peers --token <YOUR_TOKEN> --root "<YOUR_ROOT>"
 ```
 "#;

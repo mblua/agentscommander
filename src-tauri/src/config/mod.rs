@@ -12,9 +12,9 @@ use std::path::PathBuf;
 pub fn config_dir() -> Option<PathBuf> {
     let home = dirs::home_dir()?;
     let dir_name = if cfg!(debug_assertions) {
-        ".agentscommander-dev"
+        ".agentscommander-new-dev"
     } else {
-        ".agentscommander"
+        ".agentscommander-new"
     };
     Some(home.join(dir_name))
 }

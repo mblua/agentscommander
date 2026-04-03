@@ -106,9 +106,9 @@ fn read_role(repo_path: &str) -> String {
 fn load_teams_config() -> Option<serde_json::Value> {
     let home = dirs::home_dir()?;
     let dir_name = if cfg!(debug_assertions) {
-        ".agentscommander-dev"
+        ".agentscommander-new-dev"
     } else {
-        ".agentscommander"
+        ".agentscommander-new"
     };
     let teams_path = home.join(dir_name).join("teams.json");
     let content = std::fs::read_to_string(teams_path).ok()?;

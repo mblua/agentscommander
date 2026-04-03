@@ -29,7 +29,7 @@ use web::broadcast::WsBroadcaster;
 pub fn resolve_bin_label() -> String {
     std::env::current_exe()
         .map(|p| p.to_string_lossy().to_string())
-        .unwrap_or_else(|_| "agentscommander.exe".to_string())
+        .unwrap_or_else(|_| "agentscommander-new.exe".to_string())
 }
 
 /// Tracks which sessions are currently detached into their own windows.
@@ -257,7 +257,7 @@ pub fn run() {
                 "sidebar",
                 WebviewUrl::App("index.html?window=sidebar".into()),
             )
-            .title("Agents Commander")
+            .title("Agents Commander New")
             .icon(icon.clone())
             .expect("Failed to set sidebar icon")
             .min_inner_size(200.0, 400.0)

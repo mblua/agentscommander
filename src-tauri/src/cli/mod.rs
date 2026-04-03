@@ -5,7 +5,7 @@ pub mod list_peers;
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
-#[command(name = "agentscommander")]
+#[command(name = "agentscommander-new")]
 #[command(about = "Agent terminal session manager with inter-agent messaging")]
 #[command(after_help = "\
 TOKEN: Your session token is injected into your console as a '# === Session Credentials ===' block \
