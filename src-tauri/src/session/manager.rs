@@ -28,6 +28,8 @@ impl SessionManager {
         shell: String,
         shell_args: Vec<String>,
         working_directory: String,
+        git_branch_source: Option<String>,
+        git_branch_prefix: Option<String>,
     ) -> Result<Session, AppError> {
         let id = Uuid::new_v4();
 
@@ -47,6 +49,8 @@ impl SessionManager {
             pending_review: false,
             last_prompt: None,
             git_branch: None,
+            git_branch_source,
+            git_branch_prefix,
             token: Uuid::new_v4(),
         };
 
@@ -181,11 +185,11 @@ impl SessionManager {
         }
     }
 
-    pub async fn get_sessions_directories(&self) -> Vec<(Uuid, String)> {
+    pub async fn get_sessions_directories(&self) -> Vec<(Uuid, String, Option<String>, Option<String>)> {
         let sessions = self.sessions.read().await;
         sessions
             .iter()
-            .map(|(id, s)| (*id, s.working_directory.clone()))
+            .map(|(id, s)| (*id, s.working_directory.clone(), s.git_branch_source.clone(), s.git_branch_prefix.clone()))
             .collect()
     }
 

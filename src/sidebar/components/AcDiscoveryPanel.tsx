@@ -31,10 +31,25 @@ const AcDiscoveryPanel: Component = () => {
   };
 
   const handleReplicaClick = (replica: AcAgentReplica, wg: AcWorkgroup) => {
+    const repoPaths = replica.repoPaths ?? [];
+    let gitBranchSource: string | undefined;
+    let gitBranchPrefix: string | undefined;
+
+    if (repoPaths.length === 1) {
+      gitBranchSource = repoPaths[0];
+      // Derive repo name from directory name, strip "repo-" prefix if present
+      const dirName = repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
+      gitBranchPrefix = dirName.startsWith("repo-") ? dirName.slice(5) : dirName;
+    } else if (repoPaths.length > 1) {
+      gitBranchPrefix = "multi-repo";
+    }
+
     SessionAPI.create({
       cwd: replica.path,
       sessionName: `${wg.name}/${replica.name}`,
       agentId: replica.preferredAgentId,
+      gitBranchSource,
+      gitBranchPrefix,
     });
   };
 

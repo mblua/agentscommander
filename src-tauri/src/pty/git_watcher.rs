@@ -57,8 +57,20 @@ impl GitWatcher {
             mgr.get_sessions_directories().await
         };
 
-        for (id, working_dir) in dirs {
-            let branch = Self::detect_branch(&working_dir).await;
+        for (id, working_dir, branch_source, branch_prefix) in dirs {
+            let branch = if let Some(ref prefix) = branch_prefix {
+                if let Some(ref source) = branch_source {
+                    // Detect from repo path, format as "repoName/branch"
+                    Self::detect_branch(source).await
+                        .map(|b| format!("{}/{}", prefix, b))
+                } else {
+                    // Static label (e.g., "multi-repo")
+                    Some(prefix.clone())
+                }
+            } else {
+                // Standard behavior: detect from session cwd
+                Self::detect_branch(&working_dir).await
+            };
 
             // Check cache and update - lock scope kept short and before any .await
             let changed = {

@@ -10,6 +10,8 @@ export interface Session {
   pendingReview: boolean;
   lastPrompt: string | null;
   gitBranch: string | null;
+  gitBranchSource: string | null;
+  gitBranchPrefix: string | null;
   token: string;
 }
 

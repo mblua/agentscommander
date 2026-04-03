@@ -18,6 +18,14 @@ pub struct Session {
     pub pending_review: bool,
     pub last_prompt: Option<String>,
     pub git_branch: Option<String>,
+    /// Path to detect git branch from (overrides working_directory when set).
+    /// Used for replica sessions where the cwd is the agent dir but we want the repo's branch.
+    #[serde(default)]
+    pub git_branch_source: Option<String>,
+    /// Prefix to prepend to the detected branch (e.g., "agentscommander" → "agentscommander/main").
+    /// When set without git_branch_source, used as the full static label (e.g., "multi-repo").
+    #[serde(default)]
+    pub git_branch_prefix: Option<String>,
     /// Unique token for CLI authentication. Passed to agents via init prompt.
     pub token: Uuid,
 }
@@ -47,6 +55,10 @@ pub struct SessionInfo {
     pub pending_review: bool,
     pub last_prompt: Option<String>,
     pub git_branch: Option<String>,
+    #[serde(default)]
+    pub git_branch_source: Option<String>,
+    #[serde(default)]
+    pub git_branch_prefix: Option<String>,
     pub token: String,
 }
 
@@ -64,6 +76,8 @@ impl From<&Session> for SessionInfo {
             pending_review: false,
             last_prompt: s.last_prompt.clone(),
             git_branch: s.git_branch.clone(),
+            git_branch_source: s.git_branch_source.clone(),
+            git_branch_prefix: s.git_branch_prefix.clone(),
             token: s.token.to_string(),
         }
     }

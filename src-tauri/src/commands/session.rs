@@ -29,10 +29,12 @@ pub async fn create_session_inner(
     agent_label: Option<String>,
     skip_tooling_save: bool,
     is_restore: bool,
+    git_branch_source: Option<String>,
+    git_branch_prefix: Option<String>,
 ) -> Result<SessionInfo, String> {
     let mgr = session_mgr.read().await;
     let mut session = mgr
-        .create_session(shell.clone(), shell_args.clone(), cwd.clone())
+        .create_session(shell.clone(), shell_args.clone(), cwd.clone(), git_branch_source, git_branch_prefix)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -161,6 +163,8 @@ pub async fn create_session(
     cwd: Option<String>,
     session_name: Option<String>,
     agent_id: Option<String>,
+    git_branch_source: Option<String>,
+    git_branch_prefix: Option<String>,
 ) -> Result<SessionInfo, String> {
     let cfg = settings.read().await;
 
@@ -214,6 +218,8 @@ pub async fn create_session(
         agent_label,
         false, // persist tooling
         false, // not a restore
+        git_branch_source,
+        git_branch_prefix,
     )
     .await?;
 

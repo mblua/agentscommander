@@ -23,6 +23,8 @@ export interface CreateSessionOptions {
   cwd?: string;
   sessionName?: string;
   agentId?: string;
+  gitBranchSource?: string;
+  gitBranchPrefix?: string;
 }
 
 export const SessionAPI = {
@@ -33,6 +35,8 @@ export const SessionAPI = {
       cwd: opts?.cwd ?? null,
       sessionName: opts?.sessionName ?? null,
       agentId: opts?.agentId ?? null,
+      gitBranchSource: opts?.gitBranchSource ?? null,
+      gitBranchPrefix: opts?.gitBranchPrefix ?? null,
     }),
 
   destroy: (id: string) => transport.invoke<void>("destroy_session", { id }),

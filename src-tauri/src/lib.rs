@@ -337,6 +337,8 @@ pub fn run() {
                             None, // No agent label on restore (auto-detected from shell)
                             false, // Persist tooling on restore
                             true,  // This IS a restore
+                            None,  // git_branch_source
+                            None,  // git_branch_prefix
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {

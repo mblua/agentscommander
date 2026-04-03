@@ -39,6 +39,8 @@ function makeInactiveEntry(name: string, path: string): Session {
     pendingReview: false,
     lastPrompt: null,
     gitBranch: null,
+    gitBranchSource: null,
+    gitBranchPrefix: null,
     token: "",
   };
 }

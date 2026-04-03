@@ -93,7 +93,7 @@ impl MailboxPoller {
         };
 
         let mut all_paths: Vec<String> = repo_paths;
-        for (_, dir) in &session_dirs {
+        for (_, dir, _, _) in &session_dirs {
             if !all_paths.contains(dir) {
                 all_paths.push(dir.clone());
             }
@@ -422,6 +422,8 @@ impl MailboxPoller {
                 None, // No agent label for temp sessions
                 true,  // Skip tooling save for temp sessions
                 false, // not a restore
+                None,  // git_branch_source
+                None,  // git_branch_prefix
             )
             .await
             {
@@ -723,10 +725,10 @@ impl MailboxPoller {
             "[mailbox] find_active_session for '{}' — {} sessions: {:?}",
             agent_name,
             dirs.len(),
-            dirs.iter().map(|(id, cwd)| format!("{}={}", id, cwd)).collect::<Vec<_>>()
+            dirs.iter().map(|(id, cwd, _, _)| format!("{}={}", id, cwd)).collect::<Vec<_>>()
         );
 
-        for (id, cwd) in &dirs {
+        for (id, cwd, _, _) in &dirs {
             let normalized = cwd.replace('\\', "/");
             if normalized.ends_with(agent_name)
                 || normalized.contains(&format!("/{}", agent_name))
@@ -746,7 +748,7 @@ impl MailboxPoller {
         let mgr = session_mgr.read().await;
         let dirs = mgr.get_sessions_directories().await;
 
-        for (_, cwd) in &dirs {
+        for (_, cwd, _, _) in &dirs {
             let normalized = cwd.replace('\\', "/");
             if normalized.ends_with(agent_name) || normalized.contains(&format!("/{}", agent_name)) {
                 return Some(cwd.clone());
@@ -1021,6 +1023,8 @@ impl MailboxPoller {
                 None,  // No agent label — auto-detected from shell
                 false, // Persist tooling
                 false, // not a restore
+                None,  // git_branch_source
+                None,  // git_branch_prefix
             )
             .await
             {
