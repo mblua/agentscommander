@@ -127,10 +127,118 @@ fn replace_ac_block(existing: &str, new_block: &str) -> String {
 /// Special token in context[] that resolves to the global AgentsCommanderContext.md.
 const CONTEXT_TOKEN_GLOBAL: &str = "$AGENTSCOMMANDER_CONTEXT";
 
+/// Special token in context[] that generates workspace repo info from the "repos" field.
+const CONTEXT_TOKEN_REPOS: &str = "$REPOS_WORKSPACE_INFO";
+
+/// Generate a markdown file with workspace repo information from the replica's config.
+/// Reads "repos" from `config`, resolves paths relative to `cwd_path`, detects git branches.
+/// Returns the path to the generated temp file.
+fn generate_repos_workspace_info(
+    cwd_path: &std::path::Path,
+    config: &serde_json::Value,
+) -> Result<std::path::PathBuf, String> {
+    let config_dir = super::config_dir()
+        .ok_or_else(|| "Could not resolve app config directory".to_string())?;
+    let context_dir = config_dir.join("context-cache");
+    std::fs::create_dir_all(&context_dir)
+        .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
+
+    let hash = simple_hash(&cwd_path.to_string_lossy());
+    let file_path = context_dir.join(format!("repos-workspace-{}.md", hash));
+
+    let repos = config
+        .get("repos")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+
+    if repos.is_empty() {
+        std::fs::write(&file_path, "# Workspace Repos\n\nNo repos configured for this replica.\n")
+            .map_err(|e| format!("Failed to write repos workspace info: {}", e))?;
+        return Ok(file_path);
+    }
+
+    let mut md = String::from(
+        "# Workspace Repos\n\n\
+         You are working inside a workgroup replica. Your working directory is your agent dir, \
+         but your code repos are listed below. You MUST change to the appropriate repo directory \
+         before doing any code work (git, file edits, builds, etc).\n\n\
+         ## Repos\n\n",
+    );
+
+    for repo_val in &repos {
+        let rel = match repo_val.as_str() {
+            Some(s) => s,
+            None => continue,
+        };
+
+        let resolved = cwd_path.join(rel);
+        // Canonicalize to get a clean absolute path (strip \\?\ on Windows)
+        let abs_path = std::fs::canonicalize(&resolved)
+            .map(|p| {
+                let s = p.to_string_lossy();
+                s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+            })
+            .unwrap_or_else(|_| resolved.to_string_lossy().to_string());
+
+        let repo_name = resolved
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or(rel);
+
+        if !resolved.exists() {
+            md.push_str(&format!(
+                "- **{}** — Path: `{}` — **(NOT FOUND)**\n",
+                repo_name, abs_path
+            ));
+            continue;
+        }
+
+        let branch = detect_git_branch(&abs_path).unwrap_or_else(|| "unknown".to_string());
+        md.push_str(&format!(
+            "- **{}** — Path: `{}` — Branch: `{}`\n",
+            repo_name, abs_path, branch
+        ));
+    }
+
+    std::fs::write(&file_path, &md)
+        .map_err(|e| format!("Failed to write repos workspace info: {}", e))?;
+
+    Ok(file_path)
+}
+
+/// Detect git branch for a given directory path.
+fn detect_git_branch(dir: &str) -> Option<String> {
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut cmd = std::process::Command::new("git");
+    cmd.args(["-C", dir, "branch", "--show-current"]);
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    match cmd.output() {
+        Ok(out) if out.status.success() => {
+            let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            if branch.is_empty() || branch == "HEAD" {
+                None
+            } else {
+                Some(branch)
+            }
+        }
+        _ => None,
+    }
+}
+
 /// Build a combined context file for a replica session.
 /// Reads config.json from `cwd`, looks for `context[]` array.
 /// Entries are resolved in order:
 /// - `$AGENTSCOMMANDER_CONTEXT` → resolves to the global AgentsCommanderContext.md
+/// - `$REPOS_WORKSPACE_INFO` → generates workspace repo info from the "repos" field
 /// - Any other string → resolved as a path relative to `cwd`
 /// The global context is NOT auto-prepended — it is only included if the token is in the array.
 /// Returns Ok(Some(path)) with the combined temp file, Ok(None) if no context[] field,
@@ -156,7 +264,7 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
         _ => return Ok(None),
     };
 
-    // Resolve and validate all paths (supporting $AGENTSCOMMANDER_CONTEXT token)
+    // Resolve and validate all paths (supporting special tokens)
     let mut resolved_paths: Vec<(String, std::path::PathBuf)> = Vec::new(); // (label, abs_path)
     let mut missing: Vec<String> = Vec::new();
 
@@ -167,9 +275,11 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
         };
 
         if raw == CONTEXT_TOKEN_GLOBAL {
-            // Resolve the special token to the global context file
             let global_path = ensure_global_context()?;
             resolved_paths.push(("AgentsCommanderContext.md".to_string(), std::path::PathBuf::from(&global_path)));
+        } else if raw == CONTEXT_TOKEN_REPOS {
+            let repos_path = generate_repos_workspace_info(cwd_path, &config)?;
+            resolved_paths.push(("Workspace Repos".to_string(), repos_path));
         } else {
             let abs = cwd_path.join(raw);
             if abs.exists() {
