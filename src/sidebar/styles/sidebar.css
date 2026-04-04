@@ -2452,6 +2452,13 @@ html, body, #root {
   margin-bottom: 2px;
 }
 
+.ac-empty-hint {
+  padding: 4px 12px 4px 24px;
+  font-size: 11px;
+  color: var(--sidebar-fg-dim, rgba(255, 255, 255, 0.35));
+  font-style: italic;
+}
+
 .ac-wg-header {
   display: flex;
   flex-direction: column;

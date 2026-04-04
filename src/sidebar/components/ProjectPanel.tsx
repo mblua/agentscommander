@@ -347,23 +347,28 @@ const ProjectPanel: Component = () => {
                   }}
                 </For>
                 {/* Agent Matrix */}
-                <Show when={proj.agents.length > 0}>
-                  {(() => {
-                    const [matrixCollapsed, setMatrixCollapsed] = createSignal(false);
-                    return (
-                      <div class="ac-wg-group">
-                        <div
-                          class="ac-wg-header ac-wg-header--collapsible"
-                          onClick={() => setMatrixCollapsed((c) => !c)}
-                        >
-                          <span class="ac-discovery-chevron" classList={{ collapsed: matrixCollapsed() }}>
-                            &#x25BE;
-                          </span>
-                          <div class="ac-wg-header-text">
-                            <span class="ac-wg-name">Agent Matrix</span>
-                          </div>
+                {(() => {
+                  const [matrixCollapsed, setMatrixCollapsed] = createSignal(false);
+                  return (
+                    <div class="ac-wg-group">
+                      <div
+                        class="ac-wg-header ac-wg-header--collapsible"
+                        onClick={() => setMatrixCollapsed((c) => !c)}
+                      >
+                        <span class="ac-discovery-chevron" classList={{ collapsed: matrixCollapsed() }}>
+                          &#x25BE;
+                        </span>
+                        <div class="ac-wg-header-text">
+                          <span class="ac-wg-name">Agent Matrix</span>
                         </div>
-                        <Show when={!matrixCollapsed()}>
+                      </div>
+                      <Show when={!matrixCollapsed()}>
+                        <Show
+                          when={proj.agents.length > 0}
+                          fallback={
+                            <div class="ac-empty-hint">No agents</div>
+                          }
+                        >
                           <For each={proj.agents}>
                             {(agent) => {
                               const session = () => sessionsStore.findSessionByName(agent.name);
@@ -396,28 +401,33 @@ const ProjectPanel: Component = () => {
                             }}
                           </For>
                         </Show>
-                      </div>
-                    );
-                  })()}
-                </Show>
+                      </Show>
+                    </div>
+                  );
+                })()}
                 {/* Teams */}
-                <Show when={proj.teams.length > 0}>
-                  {(() => {
-                    const [teamsCollapsed, setTeamsCollapsed] = createSignal(false);
-                    return (
-                      <div class="ac-wg-group">
-                        <div
-                          class="ac-wg-header ac-wg-header--collapsible"
-                          onClick={() => setTeamsCollapsed((c) => !c)}
-                        >
-                          <span class="ac-discovery-chevron" classList={{ collapsed: teamsCollapsed() }}>
-                            &#x25BE;
-                          </span>
-                          <div class="ac-wg-header-text">
-                            <span class="ac-wg-name">Teams</span>
-                          </div>
+                {(() => {
+                  const [teamsCollapsed, setTeamsCollapsed] = createSignal(false);
+                  return (
+                    <div class="ac-wg-group">
+                      <div
+                        class="ac-wg-header ac-wg-header--collapsible"
+                        onClick={() => setTeamsCollapsed((c) => !c)}
+                      >
+                        <span class="ac-discovery-chevron" classList={{ collapsed: teamsCollapsed() }}>
+                          &#x25BE;
+                        </span>
+                        <div class="ac-wg-header-text">
+                          <span class="ac-wg-name">Teams</span>
                         </div>
-                        <Show when={!teamsCollapsed()}>
+                      </div>
+                      <Show when={!teamsCollapsed()}>
+                        <Show
+                          when={proj.teams.length > 0}
+                          fallback={
+                            <div class="ac-empty-hint">No teams</div>
+                          }
+                        >
                           <For each={proj.teams}>
                             {(team) => {
                               const [teamExpanded, setTeamExpanded] = createSignal(false);
@@ -453,10 +463,10 @@ const ProjectPanel: Component = () => {
                             }}
                           </For>
                         </Show>
-                      </div>
-                    );
-                  })()}
-                </Show>
+                      </Show>
+                    </div>
+                  );
+                })()}
               </div>
             </Show>
 
