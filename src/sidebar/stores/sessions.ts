@@ -46,7 +46,7 @@ function makeInactiveEntry(name: string, path: string): Session {
   };
 }
 
-/** Names and paths owned by WG replicas — used to hide them from Agent Sessions */
+/** Names and paths owned by WG replicas and matrix agents — used to hide them from Agent Sessions */
 const wgReplicaMemo = createMemo(() => {
   const names = new Set<string>();
   const paths = new Set<string>();
@@ -57,6 +57,10 @@ const wgReplicaMemo = createMemo(() => {
         names.add(`${wg.name}/${replica.name}`);
         paths.add(normalizePath(replica.path));
       }
+    }
+    for (const agent of proj.agents) {
+      names.add(agent.name);
+      paths.add(normalizePath(agent.path));
     }
   }
   return { names, paths };

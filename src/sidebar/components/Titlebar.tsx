@@ -1,7 +1,5 @@
 import { Component, Show, createSignal, onMount, onCleanup } from "solid-js";
 import iconUrl from "../../assets/icon-16.png";
-import { getConsoleText } from "../../shared/console-capture";
-import { DebugAPI } from "../../shared/ipc";
 import { applyWindowLayout } from "../../shared/window-layout";
 import { isTauri } from "../../shared/platform";
 
@@ -9,7 +7,6 @@ declare const __APP_VERSION__: string;
 const APP_VERSION = __APP_VERSION__;
 
 const Titlebar: Component = () => {
-  const [copied, setCopied] = createSignal(false);
   const [layoutOpen, setLayoutOpen] = createSignal(false);
 
   const handleMinimize = async () => {
@@ -21,14 +18,6 @@ const Titlebar: Component = () => {
     if (!isTauri) return;
     const { getCurrentWindow } = await import("@tauri-apps/api/window");
     getCurrentWindow().close();
-  };
-
-  const handleCopyLogs = async (e: MouseEvent) => {
-    e.stopPropagation();
-    const text = getConsoleText();
-    await DebugAPI.saveLogs(text);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1500);
   };
 
   const handleLayout = async (side: "left" | "right") => {
@@ -87,15 +76,6 @@ const Titlebar: Component = () => {
             </div>
           )}
         </div>
-        {import.meta.env.DEV && (
-          <button
-            class={`titlebar-btn titlebar-btn-logs ${copied() ? "copied" : ""}`}
-            onClick={handleCopyLogs}
-            title={copied() ? "Copied!" : "Copy console logs to clipboard"}
-          >
-            {copied() ? "\u2713" : "\u2261"}
-          </button>
-        )}
         <Show when={isTauri}>
           <button class="titlebar-btn" onClick={handleMinimize} title="Minimize">
             &#x2014;

@@ -74,7 +74,20 @@ const ProjectPanel: Component = () => {
     });
   };
 
-  const handleAgentClick = (agent: { name: string; path: string; preferredAgentId?: string }) => {
+  const handleAgentClick = async (agent: { name: string; path: string; preferredAgentId?: string }) => {
+    const existing = sessionsStore.findSessionByName(agent.name);
+    if (existing) {
+      await SessionAPI.switch(existing.id);
+      if (isTauri) {
+        const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        const detachedLabel = `terminal-${existing.id.replace(/-/g, "")}`;
+        const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
+        if (!detachedWin) {
+          await WindowAPI.ensureTerminal();
+        }
+      }
+      return;
+    }
     SessionAPI.create({
       cwd: agent.path,
       sessionName: agent.name,
@@ -195,22 +208,35 @@ const ProjectPanel: Component = () => {
                       </div>
                       <Show when={!matrixCollapsed()}>
                         <For each={proj().agents}>
-                          {(agent) => (
-                            <div
-                              class="ac-discovery-item"
-                              onClick={() => handleAgentClick(agent)}
-                              title={agent.path}
-                            >
-                              <div class="ac-discovery-item-info">
-                                <span class="ac-discovery-item-name">
-                                  {agent.name.slice(agent.name.lastIndexOf("/") + 1)}
-                                </span>
-                                <div class="ac-discovery-badges">
-                                  <span class="ac-discovery-badge team">matrix</span>
-                                </div>
-                              </div>
-                            </div>
-                          )}
+                          {(agent) => {
+                            const session = () => sessionsStore.findSessionByName(agent.name);
+                            return (
+                              <Show
+                                when={session()}
+                                fallback={
+                                  <div
+                                    class="ac-discovery-item"
+                                    onClick={() => handleAgentClick(agent)}
+                                    title={agent.path}
+                                  >
+                                    <div class="session-item-status offline" />
+                                    <div class="ac-discovery-item-info">
+                                      <span class="ac-discovery-item-name">
+                                        {agent.name.slice(agent.name.lastIndexOf("/") + 1)}
+                                      </span>
+                                    </div>
+                                  </div>
+                                }
+                              >
+                                {(s) => (
+                                  <SessionItem
+                                    session={s()}
+                                    isActive={s().id === sessionsStore.activeId}
+                                  />
+                                )}
+                              </Show>
+                            );
+                          }}
                         </For>
                       </Show>
                     </div>
