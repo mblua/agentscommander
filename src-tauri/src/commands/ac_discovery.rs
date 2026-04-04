@@ -83,11 +83,20 @@ fn agent_display_name(project_folder: &str, dir_name: &str) -> String {
     format!("{}/{}", project_folder, agent_name)
 }
 
-/// Resolve a relative agent ref (e.g. "../_agent_tech-lead") to a display name.
+/// Resolve an agent ref to a display name. Handles both relative refs
+/// (e.g. "../_agent_tech-lead") and absolute paths.
 fn resolve_agent_ref(project_folder: &str, agent_ref: &str) -> String {
-    let dir_name = agent_ref
+    // Normalize to forward slashes and strip relative prefixes
+    let normalized = agent_ref.replace('\\', "/");
+    let trimmed = normalized
         .trim_start_matches("../")
         .trim_start_matches("./");
+    // If still looks like an absolute path, extract just the last segment
+    let dir_name = if trimmed.contains(':') || trimmed.starts_with('/') {
+        trimmed.rsplit('/').next().unwrap_or(trimmed)
+    } else {
+        trimmed
+    };
     agent_display_name(project_folder, dir_name)
 }
 

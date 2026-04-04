@@ -447,14 +447,20 @@ const ProjectPanel: Component = () => {
                                   <Show when={teamExpanded()}>
                                     <div class="ac-team-members">
                                       <For each={team.agents}>
-                                        {(agentName) => (
-                                          <div class="ac-team-member">
-                                            <span class="ac-team-member-name">{agentName}</span>
-                                            <Show when={agentName === team.coordinator}>
-                                              <span class="ac-discovery-badge coord">coordinator</span>
-                                            </Show>
-                                          </div>
-                                        )}
+                                        {(agentName) => {
+                                          const shortName = () => {
+                                            const parts = agentName.replace(/\\/g, "/").split("/");
+                                            return parts[parts.length - 1].replace(/^__?agent_/, "");
+                                          };
+                                          return (
+                                            <div class="ac-team-member" title={agentName}>
+                                              <span class="ac-team-member-name">{shortName()}</span>
+                                              <Show when={agentName === team.coordinator}>
+                                                <span class="ac-discovery-badge coord">coordinator</span>
+                                              </Show>
+                                            </div>
+                                          );
+                                        }}
                                       </For>
                                     </div>
                                   </Show>
