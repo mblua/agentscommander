@@ -45,6 +45,10 @@ pub async fn create_agent_folder(parent_path: String, agent_name: String) -> Res
     std::fs::write(&claude_path, claude_md)
         .map_err(|e| format!("Failed to write CLAUDE.md: {}", e))?;
 
+    // TODO: When replica creation is added (for __agent_* dirs inside workgroups),
+    // write config.json with: { "context": ["$AGENTSCOMMANDER_CONTEXT"] }
+    // so that replicas get the global context by default.
+
     Ok(agent_dir.to_string_lossy().to_string())
 }
 

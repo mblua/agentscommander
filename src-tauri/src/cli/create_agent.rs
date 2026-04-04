@@ -107,6 +107,10 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
         return 1;
     }
 
+    // TODO: When replica creation is added (for __agent_* dirs inside workgroups),
+    // write config.json with: { "context": ["$AGENTSCOMMANDER_CONTEXT"] }
+    // so that replicas get the global context by default.
+
     // Write .claude/settings.local.json if the launched agent has exclude_global_claude_md
     // (checked later when we resolve the agent config)
 

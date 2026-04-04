@@ -124,9 +124,15 @@ fn replace_ac_block(existing: &str, new_block: &str) -> String {
     }
 }
 
+/// Special token in context[] that resolves to the global AgentsCommanderContext.md.
+const CONTEXT_TOKEN_GLOBAL: &str = "$AGENTSCOMMANDER_CONTEXT";
+
 /// Build a combined context file for a replica session.
 /// Reads config.json from `cwd`, looks for `context[]` array.
-/// If present: validates all files exist, then concatenates global context + each context file.
+/// Entries are resolved in order:
+/// - `$AGENTSCOMMANDER_CONTEXT` → resolves to the global AgentsCommanderContext.md
+/// - Any other string → resolved as a path relative to `cwd`
+/// The global context is NOT auto-prepended — it is only included if the token is in the array.
 /// Returns Ok(Some(path)) with the combined temp file, Ok(None) if no context[] field,
 /// or Err with details about missing files.
 pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
@@ -150,20 +156,28 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
         _ => return Ok(None),
     };
 
-    // Resolve and validate all paths
-    let mut resolved_paths: Vec<std::path::PathBuf> = Vec::new();
+    // Resolve and validate all paths (supporting $AGENTSCOMMANDER_CONTEXT token)
+    let mut resolved_paths: Vec<(String, std::path::PathBuf)> = Vec::new(); // (label, abs_path)
     let mut missing: Vec<String> = Vec::new();
 
     for entry in context_array {
-        let rel = match entry.as_str() {
+        let raw = match entry.as_str() {
             Some(s) => s,
             None => continue,
         };
-        let abs = cwd_path.join(rel);
-        if abs.exists() {
-            resolved_paths.push(abs);
+
+        if raw == CONTEXT_TOKEN_GLOBAL {
+            // Resolve the special token to the global context file
+            let global_path = ensure_global_context()?;
+            resolved_paths.push(("AgentsCommanderContext.md".to_string(), std::path::PathBuf::from(&global_path)));
         } else {
-            missing.push(rel.to_string());
+            let abs = cwd_path.join(raw);
+            if abs.exists() {
+                let label = abs.file_name().and_then(|n| n.to_str()).unwrap_or(raw).to_string();
+                resolved_paths.push((label, abs));
+            } else {
+                missing.push(raw.to_string());
+            }
         }
     }
 
@@ -179,25 +193,20 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
         ));
     }
 
-    // Build combined content: global context first, then each context file
+    // Build combined content in context[] order (no auto-prepend of global context)
     let mut combined = String::new();
+    let mut first = true;
 
-    // 1. Global AgentsCommanderContext.md
-    let global_path = ensure_global_context()?;
-    let global_content = std::fs::read_to_string(&global_path)
-        .map_err(|e| format!("Failed to read AgentsCommanderContext.md: {}", e))?;
-    combined.push_str(&global_content);
-
-    // 2. Each context file, separated by headers
-    for path in &resolved_paths {
-        let file_name = path
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
+    for (label, path) in &resolved_paths {
         let content = std::fs::read_to_string(path)
             .map_err(|e| format!("Failed to read context file {}: {}", path.display(), e))?;
-        combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", file_name));
-        combined.push_str(&content);
+        if first {
+            combined.push_str(&content);
+            first = false;
+        } else {
+            combined.push_str(&format!("\n\n---\n\n# Context: {}\n\n", label));
+            combined.push_str(&content);
+        }
     }
 
     // Write to a temp file in the app config dir
