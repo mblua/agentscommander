@@ -7,11 +7,12 @@
 pub const BUILD_PROFILE: &str = env!("BUILD_PROFILE");
 
 /// Config directory name under $HOME.
-/// PROD and STAGE share the same directory; DEV uses a separate one.
+/// PROD and STAGE share `.agentscommander-new`; DEV uses a separate one.
+/// The old app uses `.agentscommander` — never touch that.
 pub fn config_dir_name() -> &'static str {
     match BUILD_PROFILE {
         "dev" => ".agentscommander-new-dev",
-        _ => ".agentscommander", // prod and stage share config
+        _ => ".agentscommander-new", // prod and stage share config
     }
 }
 
@@ -62,11 +63,13 @@ pub fn product_name() -> &'static str {
 }
 
 /// Default web server port. Each profile gets a distinct port
-/// so PROD and STAGE can run simultaneously without conflict.
+/// so PROD, STAGE, and the old app can run simultaneously.
+/// Old app uses 9876 — never collide with that.
 pub fn web_server_port() -> u16 {
     match BUILD_PROFILE {
-        "stage" => 9877,
-        _ => 9876, // prod and dev
+        "dev" => 9876,
+        "stage" => 9878,
+        _ => 9877, // prod
     }
 }
 
