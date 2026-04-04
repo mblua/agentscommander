@@ -187,12 +187,22 @@ const SessionItem: Component<{
 
   const isInactive = () => props.session.id.startsWith("inactive-");
 
-  /** Derive short "parentFolder/name" from workingDirectory for display */
+  /** Derive short display name from workingDirectory.
+   *  .ac-new paths: "agent-name@project-folder" (e.g. "code-reviewer@phi_phibridge")
+   *  Other paths: "parentFolder/name" (last 2 segments)
+   */
   const displayName = () => {
     const wd = props.session.workingDirectory;
     if (wd) {
       const normalized = wd.replace(/\\/g, "/").replace(/\/+$/, "");
       const parts = normalized.split("/");
+      const acIdx = parts.indexOf(".ac-new");
+      if (acIdx >= 1) {
+        const projectFolder = parts[acIdx - 1];
+        let agentDir = parts[parts.length - 1];
+        agentDir = agentDir.replace(/^__?agent_/, "");
+        return `${agentDir}@${projectFolder}`;
+      }
       if (parts.length >= 2) {
         return parts.slice(-2).join("/");
       }
