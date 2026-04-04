@@ -109,6 +109,23 @@ export const projectStore = {
     );
   },
 
+  /** Re-discover a single project and update its data in place */
+  async reloadProject(path: string) {
+    const normalized = normalizePath(path);
+    try {
+      const result = await ProjectAPI.discover(path);
+      setProjects((prev) =>
+        prev.map((p) =>
+          normalizePath(p.path) === normalized
+            ? { ...p, workgroups: result.workgroups, agents: result.agents, teams: result.teams }
+            : p
+        )
+      );
+    } catch (e) {
+      console.error("Failed to reload project:", e);
+    }
+  },
+
   /** Remove a project from the list by path */
   async removeProject(path: string) {
     const normalized = normalizePath(path);
