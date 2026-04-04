@@ -1,7 +1,7 @@
 import { Component, createSignal, For, Show, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../shared/types";
-import { AcDiscoveryAPI, SessionAPI } from "../../shared/ipc";
+import { AcDiscoveryAPI, SessionAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
 
 const AcDiscoveryPanel: Component = () => {
   const [agents, setAgents] = createSignal<AcAgentMatrix[]>([]);
@@ -149,9 +149,13 @@ const AcDiscoveryPanel: Component = () => {
     setNewCtxPath("");
   };
 
+  let unmounted = false;
+  let unlistenBranch: (() => void) | null = null;
+
   onMount(async () => {
     try {
       const result = await AcDiscoveryAPI.discover();
+      if (unmounted) return;
       setAgents(result.agents);
       setTeams(result.teams);
       setWorkgroups(result.workgroups);
@@ -160,6 +164,27 @@ const AcDiscoveryPanel: Component = () => {
     } finally {
       setLoading(false);
     }
+
+    if (unmounted) return;
+
+    // Listen for replica branch updates from the backend poller
+    unlistenBranch = await onDiscoveryBranchUpdated((data) => {
+      setWorkgroups((wgs) =>
+        wgs.map((wg) => ({
+          ...wg,
+          agents: wg.agents.map((a) =>
+            a.path === data.replicaPath
+              ? { ...a, repoBranch: data.branch ?? undefined }
+              : a
+          ),
+        }))
+      );
+    });
+  });
+
+  onCleanup(() => {
+    unmounted = true;
+    unlistenBranch?.();
   });
 
   return (

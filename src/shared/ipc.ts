@@ -194,6 +194,15 @@ export function onSessionGitBranch(
   );
 }
 
+export function onDiscoveryBranchUpdated(
+  callback: (data: { replicaPath: string; branch: string | null }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ replicaPath: string; branch: string | null }>(
+    "ac_discovery_branch_updated",
+    callback
+  );
+}
+
 export function onSessionIdle(
   callback: (data: { id: string }) => void
 ): Promise<UnlistenFn> {

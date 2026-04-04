@@ -1,6 +1,9 @@
 use serde::Serialize;
+use std::collections::HashMap;
 use std::path::Path;
-use tauri::State;
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, State};
 
 use crate::config::settings::SettingsState;
 
@@ -115,10 +118,150 @@ fn detect_git_branch_sync(dir: &str) -> Option<String> {
     }
 }
 
+// --- Discovery Branch Watcher ---
+
+const BRANCH_POLL_INTERVAL: Duration = Duration::from_secs(15);
+
+#[derive(Clone)]
+struct ReplicaBranchEntry {
+    replica_path: String,
+    repo_path: String,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DiscoveryBranchPayload {
+    replica_path: String,
+    branch: Option<String>,
+}
+
+pub struct DiscoveryBranchWatcher {
+    app_handle: AppHandle,
+    replicas: Mutex<Vec<ReplicaBranchEntry>>,
+    cache: Mutex<HashMap<String, Option<String>>>,
+}
+
+impl DiscoveryBranchWatcher {
+    pub fn new(app_handle: AppHandle) -> Arc<Self> {
+        Arc::new(Self {
+            app_handle,
+            replicas: Mutex::new(Vec::new()),
+            cache: Mutex::new(HashMap::new()),
+        })
+    }
+
+    /// Update the list of replicas to watch from discovered workgroups.
+    /// Pre-seeds the cache with known branch values to avoid spurious events on first poll.
+    pub fn update_replicas(&self, workgroups: &[AcWorkgroup]) {
+        let mut entries = Vec::new();
+        let mut known_branches: HashMap<String, Option<String>> = HashMap::new();
+        for wg in workgroups {
+            for agent in &wg.agents {
+                if agent.repo_paths.len() == 1 {
+                    entries.push(ReplicaBranchEntry {
+                        replica_path: agent.path.clone(),
+                        repo_path: agent.repo_paths[0].clone(),
+                    });
+                    known_branches.insert(agent.path.clone(), agent.repo_branch.clone());
+                }
+            }
+        }
+
+        // Prune stale entries and pre-seed new ones (preserve live-polled values)
+        let valid_paths: std::collections::HashSet<&str> =
+            entries.iter().map(|e| e.replica_path.as_str()).collect();
+        let mut cache = self.cache.lock().unwrap();
+        cache.retain(|k, _| valid_paths.contains(k.as_str()));
+        for (path, branch) in known_branches {
+            cache.entry(path).or_insert(branch);
+        }
+        drop(cache);
+
+        *self.replicas.lock().unwrap() = entries;
+    }
+
+    /// Start the polling loop on a dedicated thread.
+    pub fn start(self: &Arc<Self>) {
+        let watcher = Arc::clone(self);
+        std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new()
+                .expect("Failed to create tokio runtime for DiscoveryBranchWatcher");
+            rt.block_on(async move {
+                loop {
+                    tokio::time::sleep(BRANCH_POLL_INTERVAL).await;
+                    watcher.poll().await;
+                }
+            });
+        });
+    }
+
+    async fn poll(&self) {
+        let entries = self.replicas.lock().unwrap().clone();
+        if entries.is_empty() {
+            return;
+        }
+
+        for entry in &entries {
+            let branch = Self::detect_branch(&entry.repo_path).await;
+
+            // Single lock acquisition: check + update atomically
+            let changed = {
+                let mut cache = self.cache.lock().unwrap();
+                if cache.get(&entry.replica_path) != Some(&branch) {
+                    cache.insert(entry.replica_path.clone(), branch.clone());
+                    true
+                } else {
+                    false
+                }
+            };
+
+            if changed {
+                log::debug!(
+                    "[DiscoveryBranchWatcher] branch changed for {}: {:?}",
+                    entry.replica_path,
+                    branch
+                );
+                let _ = self.app_handle.emit(
+                    "ac_discovery_branch_updated",
+                    DiscoveryBranchPayload {
+                        replica_path: entry.replica_path.clone(),
+                        branch: branch.clone(),
+                    },
+                );
+            }
+        }
+    }
+
+    async fn detect_branch(dir: &str) -> Option<String> {
+        #[cfg(windows)]
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+        let mut cmd = tokio::process::Command::new("git");
+        cmd.args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(dir);
+
+        #[cfg(windows)]
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        match cmd.output().await {
+            Ok(out) if out.status.success() => {
+                let branch = String::from_utf8_lossy(&out.stdout).trim().to_string();
+                if branch.is_empty() || branch == "HEAD" {
+                    None
+                } else {
+                    Some(branch)
+                }
+            }
+            _ => None,
+        }
+    }
+}
+
 /// Discover AC-new agent matrices from .ac-new/ directories within configured repo paths.
 #[tauri::command]
 pub async fn discover_ac_agents(
     settings: State<'_, SettingsState>,
+    branch_watcher: State<'_, Arc<DiscoveryBranchWatcher>>,
 ) -> Result<AcDiscoveryResult, String> {
     let cfg = settings.read().await;
     let mut agents: Vec<AcAgentMatrix> = Vec::new();
@@ -342,6 +485,9 @@ pub async fn discover_ac_agents(
     agents.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     teams.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
     workgroups.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+
+    // Update the branch watcher with discovered replicas
+    branch_watcher.update_replicas(&workgroups);
 
     Ok(AcDiscoveryResult { agents, teams, workgroups })
 }

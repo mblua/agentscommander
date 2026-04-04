@@ -15,6 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use config::sessions_persistence;
 use tauri::Manager;
 use config::settings::SettingsState;
+use commands::ac_discovery::DiscoveryBranchWatcher;
 use pty::git_watcher::GitWatcher;
 use pty::idle_detector::IdleDetector;
 use pty::manager::PtyManager;
@@ -207,6 +208,11 @@ pub fn run() {
             // Git branch watcher: polls git branch for each session every 5s
             let git_watcher = GitWatcher::new(session_mgr_for_git, app.handle().clone());
             git_watcher.start();
+
+            // Discovery branch watcher: polls git branch for discovered replicas every 15s
+            let discovery_branch_watcher = DiscoveryBranchWatcher::new(app.handle().clone());
+            discovery_branch_watcher.start();
+            app.manage(discovery_branch_watcher);
 
             // PtyManager needs GitWatcher for cleanup on session kill
             let pty_mgr = Arc::new(Mutex::new(PtyManager::new(
