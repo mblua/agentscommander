@@ -2496,6 +2496,59 @@ html, body, #root {
   text-overflow: ellipsis;
 }
 
+/* Team section styles */
+.ac-team-group {
+  margin-bottom: 1px;
+}
+
+.ac-team-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px var(--spacing-md) 4px calc(var(--spacing-md) + 6px);
+  cursor: pointer;
+  user-select: none;
+  transition: background var(--transition-fast);
+}
+
+.ac-team-header:hover {
+  background: var(--sidebar-hover);
+}
+
+.ac-team-name {
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ac-team-count {
+  margin-left: auto;
+  font-size: 9px;
+  opacity: 0.4;
+  color: var(--sidebar-fg-dim);
+}
+
+.ac-team-members {
+  padding: 0 0 2px 0;
+}
+
+.ac-team-member {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px var(--spacing-md) 3px calc(var(--spacing-md) + 20px);
+  font-size: var(--font-size-sm);
+  color: var(--sidebar-fg-dim);
+}
+
+.ac-team-member-name {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 /* Context files panel (replica right-click → Context Files) */
 
 .ctx-files-overlay {

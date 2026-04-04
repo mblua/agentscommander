@@ -1,6 +1,6 @@
 import { Component, For, Show, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
-import type { AcWorkgroup, AcAgentReplica, Session } from "../../shared/types";
+import type { AcWorkgroup, AcAgentReplica, AcTeam, Session } from "../../shared/types";
 import { SessionAPI, WindowAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { projectStore } from "../stores/project";
@@ -115,6 +115,7 @@ const ProjectPanel: Component = () => {
         const [showNewAgent, setShowNewAgent] = createSignal(false);
         const [showNewTeam, setShowNewTeam] = createSignal(false);
         const [showNewWorkgroup, setShowNewWorkgroup] = createSignal(false);
+        const [teamCtxMenu, setTeamCtxMenu] = createSignal<{ team: AcTeam; x: number; y: number } | null>(null);
 
         let dismissCtx: (() => void) | null = null;
 
@@ -133,6 +134,7 @@ const ProjectPanel: Component = () => {
           e.preventDefault();
           e.stopPropagation();
           cleanupCtx();
+          setTeamCtxMenu(null);
           setCtxMenuPos({ x: e.clientX, y: e.clientY });
           setShowCtxMenu(true);
           const dismiss = (ev?: Event) => {
@@ -154,6 +156,25 @@ const ProjectPanel: Component = () => {
         const handleRemoveProject = () => {
           setShowCtxMenu(false);
           projectStore.removeProject(proj.path);
+        };
+
+        const handleTeamContextMenu = (e: MouseEvent, team: AcTeam) => {
+          e.preventDefault();
+          e.stopPropagation();
+          cleanupCtx();
+          setShowCtxMenu(false);
+          setTeamCtxMenu({ team, x: e.clientX, y: e.clientY });
+          const dismiss = (ev?: Event) => {
+            if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+            setTeamCtxMenu(null);
+            cleanupCtx();
+          };
+          dismissCtx = dismiss;
+          setTimeout(() => {
+            window.addEventListener("click", dismiss);
+            window.addEventListener("contextmenu", dismiss);
+            window.addEventListener("keydown", dismiss as any);
+          });
         };
 
         return (
@@ -379,8 +400,91 @@ const ProjectPanel: Component = () => {
                     );
                   })()}
                 </Show>
+                {/* Teams */}
+                <Show when={proj.teams.length > 0}>
+                  {(() => {
+                    const [teamsCollapsed, setTeamsCollapsed] = createSignal(false);
+                    return (
+                      <div class="ac-wg-group">
+                        <div
+                          class="ac-wg-header ac-wg-header--collapsible"
+                          onClick={() => setTeamsCollapsed((c) => !c)}
+                        >
+                          <span class="ac-discovery-chevron" classList={{ collapsed: teamsCollapsed() }}>
+                            &#x25BE;
+                          </span>
+                          <div class="ac-wg-header-text">
+                            <span class="ac-wg-name">Teams</span>
+                          </div>
+                        </div>
+                        <Show when={!teamsCollapsed()}>
+                          <For each={proj.teams}>
+                            {(team) => {
+                              const [teamExpanded, setTeamExpanded] = createSignal(false);
+                              return (
+                                <div class="ac-team-group">
+                                  <div
+                                    class="ac-team-header"
+                                    onClick={() => setTeamExpanded((e) => !e)}
+                                    onContextMenu={(e) => handleTeamContextMenu(e, team)}
+                                  >
+                                    <span class="ac-discovery-chevron" classList={{ collapsed: !teamExpanded() }}>
+                                      &#x25BE;
+                                    </span>
+                                    <span class="ac-team-name">{team.name}</span>
+                                    <span class="ac-team-count">{team.agents.length}</span>
+                                  </div>
+                                  <Show when={teamExpanded()}>
+                                    <div class="ac-team-members">
+                                      <For each={team.agents}>
+                                        {(agentName) => (
+                                          <div class="ac-team-member">
+                                            <span class="ac-team-member-name">{agentName}</span>
+                                            <Show when={agentName === team.coordinator}>
+                                              <span class="ac-discovery-badge coord">coordinator</span>
+                                            </Show>
+                                          </div>
+                                        )}
+                                      </For>
+                                    </div>
+                                  </Show>
+                                </div>
+                              );
+                            }}
+                          </For>
+                        </Show>
+                      </div>
+                    );
+                  })()}
+                </Show>
               </div>
             </Show>
+
+            {/* Team context menu */}
+            {teamCtxMenu() && (
+              <Portal>
+                <div
+                  class="session-context-menu"
+                  style={{ left: `${teamCtxMenu()!.x}px`, top: `${teamCtxMenu()!.y}px` }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    class="session-context-option context-option-disabled"
+                    disabled
+                    onClick={() => setTeamCtxMenu(null)}
+                  >
+                    Edit Team
+                  </button>
+                  <button
+                    class="session-context-option context-option-disabled"
+                    disabled
+                    onClick={() => setTeamCtxMenu(null)}
+                  >
+                    Delete Team
+                  </button>
+                </div>
+              </Portal>
+            )}
           </div>
         );
       }}
