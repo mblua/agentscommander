@@ -1,10 +1,14 @@
 import { Component, For, Show, createSignal, onMount, onCleanup } from "solid-js";
+import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, Session } from "../../shared/types";
 import { SessionAPI, WindowAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
 import { isTauri } from "../../shared/platform";
 import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import SessionItem from "./SessionItem";
+import NewEntityAgentModal from "./NewEntityAgentModal";
+import NewTeamModal from "./NewTeamModal";
+import NewWorkgroupModal from "./NewWorkgroupModal";
 
 /** Derive the repo name from a replica's repoPaths (strip 'repo-' prefix) */
 function replicaRepoName(replica: AcAgentReplica): string | undefined {
@@ -106,17 +110,135 @@ const ProjectPanel: Component = () => {
     <For each={projectStore.projects}>
       {(proj) => {
         const [collapsed, setCollapsed] = createSignal(false);
+        const [showCtxMenu, setShowCtxMenu] = createSignal(false);
+        const [ctxMenuPos, setCtxMenuPos] = createSignal({ x: 0, y: 0 });
+        const [showNewAgent, setShowNewAgent] = createSignal(false);
+        const [showNewTeam, setShowNewTeam] = createSignal(false);
+        const [showNewWorkgroup, setShowNewWorkgroup] = createSignal(false);
+
+        let dismissCtx: (() => void) | null = null;
+
+        const cleanupCtx = () => {
+          if (dismissCtx) {
+            window.removeEventListener("click", dismissCtx);
+            window.removeEventListener("contextmenu", dismissCtx);
+            window.removeEventListener("keydown", dismissCtx as any);
+            dismissCtx = null;
+          }
+        };
+
+        onCleanup(cleanupCtx);
+
+        const handleProjectContextMenu = (e: MouseEvent) => {
+          e.preventDefault();
+          e.stopPropagation();
+          cleanupCtx();
+          setCtxMenuPos({ x: e.clientX, y: e.clientY });
+          setShowCtxMenu(true);
+          const dismiss = (ev?: Event) => {
+            if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
+            setShowCtxMenu(false);
+            cleanupCtx();
+          };
+          dismissCtx = dismiss;
+          setTimeout(() => {
+            window.addEventListener("click", dismiss);
+            window.addEventListener("contextmenu", dismiss);
+            window.addEventListener("keydown", dismiss as any);
+          });
+        };
+
+        const hasTeamsWithCoord = () =>
+          proj.teams.some((t) => t.coordinator !== null && t.coordinator !== "");
+
+        const handleRemoveProject = () => {
+          setShowCtxMenu(false);
+          projectStore.removeProject(proj.path);
+        };
+
         return (
           <div class="project-panel">
             <button
               class="project-header"
               onClick={() => setCollapsed((c) => !c)}
+              onContextMenu={handleProjectContextMenu}
             >
               <span class="ac-discovery-chevron" classList={{ collapsed: collapsed() }}>
                 &#x25BE;
               </span>
               <span class="project-title">Project: {proj.folderName}</span>
             </button>
+
+            {/* Project context menu */}
+            {showCtxMenu() && (
+              <Portal>
+                <div
+                  class="session-context-menu"
+                  style={{ left: `${ctxMenuPos().x}px`, top: `${ctxMenuPos().y}px` }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    class="session-context-option"
+                    onClick={() => { setShowCtxMenu(false); setShowNewAgent(true); }}
+                  >
+                    New Agent
+                  </button>
+                  <button
+                    class="session-context-option"
+                    onClick={() => { setShowCtxMenu(false); setShowNewTeam(true); }}
+                  >
+                    New Team
+                  </button>
+                  <button
+                    class="session-context-option"
+                    classList={{ "context-option-disabled": !hasTeamsWithCoord() }}
+                    disabled={!hasTeamsWithCoord()}
+                    onClick={() => {
+                      if (!hasTeamsWithCoord()) return;
+                      setShowCtxMenu(false);
+                      setShowNewWorkgroup(true);
+                    }}
+                  >
+                    New Workgroup
+                  </button>
+                  <div class="context-separator" />
+                  <button
+                    class="session-context-option context-option-danger"
+                    onClick={handleRemoveProject}
+                  >
+                    Remove Project
+                  </button>
+                </div>
+              </Portal>
+            )}
+
+            {/* Entity creation modals */}
+            {showNewAgent() && (
+              <Portal>
+                <NewEntityAgentModal
+                  projectPath={proj.path}
+                  onClose={() => setShowNewAgent(false)}
+                />
+              </Portal>
+            )}
+            {showNewTeam() && (
+              <Portal>
+                <NewTeamModal
+                  projectPath={proj.path}
+                  onClose={() => setShowNewTeam(false)}
+                />
+              </Portal>
+            )}
+            {showNewWorkgroup() && (
+              <Portal>
+                <NewWorkgroupModal
+                  projectPath={proj.path}
+                  teams={proj.teams}
+                  onClose={() => setShowNewWorkgroup(false)}
+                />
+              </Portal>
+            )}
+
             <Show when={!collapsed()}>
               <div class="project-content">
                 {/* Workgroups */}

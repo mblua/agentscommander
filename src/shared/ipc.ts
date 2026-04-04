@@ -278,6 +278,34 @@ export const ProjectAPI = {
     transport.invoke<AcDiscoveryResult>("discover_project", { path }),
 };
 
+// Entity Creation API (agents, teams, workgroups)
+export const EntityAPI = {
+  createAgentMatrix: (projectPath: string, name: string, description: string) =>
+    transport.invoke<void>("create_agent_matrix", { projectPath, name, description }),
+
+  listAllAgents: (projectPaths: string[]) =>
+    transport.invoke<{ projectPath: string; projectName: string; agents: { name: string; path: string }[] }[]>(
+      "list_all_agents",
+      { projectPaths }
+    ),
+
+  createTeam: (
+    projectPath: string,
+    name: string,
+    agents: string[],
+    coordinator: string,
+    repos: { url: string; agents: string[] }[]
+  ) =>
+    transport.invoke<void>("create_team", { projectPath, name, agents, coordinator, repos }),
+
+  createWorkgroup: (projectPath: string, teamName: string, brief?: string) =>
+    transport.invoke<void>("create_workgroup", {
+      projectPath,
+      teamName,
+      brief: brief ?? null,
+    }),
+};
+
 // Agent Creator API
 export const AgentCreatorAPI = {
   pickFolder: (defaultPath?: string) =>
