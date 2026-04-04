@@ -61,6 +61,15 @@ pub fn product_name() -> &'static str {
     }
 }
 
+/// Default web server port. Each profile gets a distinct port
+/// so PROD and STAGE can run simultaneously without conflict.
+pub fn web_server_port() -> u16 {
+    match BUILD_PROFILE {
+        "stage" => 9877,
+        _ => 9876, // prod and dev
+    }
+}
+
 /// Whether this is the STAGE profile.
 pub fn is_stage() -> bool {
     BUILD_PROFILE == "stage"

@@ -110,7 +110,7 @@ fn default_zoom() -> f64 {
 }
 
 fn default_web_port() -> u16 {
-    9876
+    super::profile::web_server_port()
 }
 
 fn default_web_bind() -> String {
