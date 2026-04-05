@@ -70,7 +70,7 @@ pub struct AppSettings {
     /// Zoom level for the guide window (1.0 = 100%)
     #[serde(default = "default_zoom")]
     pub guide_zoom: f64,
-    /// Zoom level for the dark factory window (1.0 = 100%)
+    /// Legacy: zoom level for the removed dark factory window. Kept for backwards-compat reads.
     #[serde(default = "default_zoom")]
     pub darkfactory_zoom: f64,
     /// Saved geometry for the sidebar window

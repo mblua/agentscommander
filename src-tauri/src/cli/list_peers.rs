@@ -3,7 +3,7 @@ use serde::Serialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use crate::config::dark_factory::{AgentLocalConfig, CodingAgentEntry};
+use crate::config::agent_config::{AgentLocalConfig, CodingAgentEntry};
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -387,13 +387,6 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
     }
 }
 
-/// Load the teams.json from the global config directory.
-fn load_teams_config() -> Option<serde_json::Value> {
-    let teams_path = crate::config::config_dir()?.join("teams.json");
-    let content = std::fs::read_to_string(teams_path).ok()?;
-    serde_json::from_str(&content).ok()
-}
-
 pub fn execute(args: ListPeersArgs) -> i32 {
     let root = match args.root {
         Some(ref r) => r.clone(),
@@ -408,80 +401,88 @@ pub fn execute(args: ListPeersArgs) -> i32 {
         return execute_wg_discovery(wg);
     }
 
-    // ── Standard teams-based discovery ───────────────────────────────
-    let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
+    // ── Standard discovery-based peer listing ────────────────────────
     let my_name = agent_name_from_path(&root);
-
-    // Read our own config
-    let config_path = ac_dir.join("config.json");
-    let my_config: AgentLocalConfig = std::fs::read_to_string(&config_path)
-        .ok()
-        .and_then(|c| serde_json::from_str(&c).ok())
-        .unwrap_or_default();
+    let discovered = crate::config::teams::discover_teams();
 
     let mut peers: Vec<PeerInfo> = Vec::new();
 
-    if my_config.dark_factory.teams.is_empty() {
-        // No teams → no peers. Only team members can communicate.
-        println!("[]");
-        return 0;
-    }
+    // Find teams where I'm a member, then list their other members.
+    // Also: if I'm a coordinator, show other coordinators (cross-team).
+    let i_am_coordinator = discovered.iter().any(|t| {
+        t.coordinator_name.as_deref() == Some(&my_name)
+            || t.coordinator_path.as_ref().map(|p| agent_name_from_path(&p.to_string_lossy())).as_deref() == Some(&my_name)
+    });
 
-    // Show all members of our teams
-    if let Some(teams_json) = load_teams_config() {
-        if let Some(teams) = teams_json.get("teams").and_then(|t| t.as_array()) {
-            for team in teams {
-                let team_name = team.get("name").and_then(|n| n.as_str()).unwrap_or("");
-                if !my_config.dark_factory.teams.contains(&team_name.to_string()) {
+    for team in &discovered {
+        let i_am_in_team = crate::config::teams::can_communicate(&my_name, &my_name, std::slice::from_ref(team))
+            || team.agent_names.iter().any(|n| n == &my_name)
+            || team.agent_paths.iter().any(|p| agent_name_from_path(&p.to_string_lossy()) == my_name);
+
+        if !i_am_in_team && !i_am_coordinator {
+            continue;
+        }
+
+        for (i, display_name) in team.agent_names.iter().enumerate() {
+            let member_path = team.agent_paths.get(i);
+            let peer_name = member_path
+                .map(|p| agent_name_from_path(&p.to_string_lossy()))
+                .unwrap_or_else(|| display_name.clone());
+
+            // Skip ourselves
+            if peer_name == my_name || display_name == &my_name {
+                continue;
+            }
+
+            // For coordinators: only show other team coordinators if I'm not in this team
+            if !i_am_in_team {
+                let is_other_coordinator = team.coordinator_name.as_deref() == Some(display_name.as_str())
+                    || team.coordinator_path.as_ref().map(|p| agent_name_from_path(&p.to_string_lossy())).as_deref() == Some(&peer_name);
+                if !is_other_coordinator {
                     continue;
                 }
-
-                if let Some(members) = team.get("members").and_then(|m| m.as_array()) {
-                    for member in members {
-                        let member_path = member.get("path").and_then(|p| p.as_str()).unwrap_or("");
-
-                        // Skip ourselves
-                        let peer_name = agent_name_from_path(member_path);
-                        if peer_name == my_name {
-                            continue;
-                        }
-
-                        // Skip duplicates — add team to existing peer
-                        if peers.iter().any(|p| p.name == peer_name) {
-                            if let Some(existing) = peers.iter_mut().find(|p| p.name == peer_name) {
-                                if !existing.teams.contains(&team_name.to_string()) {
-                                    existing.teams.push(team_name.to_string());
-                                }
-                            }
-                            continue;
-                        }
-
-                        let peer_ac = Path::new(member_path).join(crate::config::agent_local_dir_name());
-                        let status = if peer_ac.join("active").exists() {
-                            "active"
-                        } else {
-                            "unknown"
-                        };
-
-                        let peer_config: AgentLocalConfig = peer_ac
-                            .join("config.json")
-                            .to_str()
-                            .and_then(|p| std::fs::read_to_string(p).ok())
-                            .and_then(|c| serde_json::from_str(&c).ok())
-                            .unwrap_or_default();
-
-                        peers.push(PeerInfo {
-                            name: peer_name,
-                            path: member_path.to_string(),
-                            status: status.to_string(),
-                            role: read_role(member_path),
-                            teams: vec![team_name.to_string()],
-                            last_coding_agent: peer_config.tooling.last_coding_agent,
-                            coding_agents: peer_config.tooling.coding_agents,
-                        });
-                    }
-                }
             }
+
+            // Skip duplicates — add team to existing peer
+            if let Some(existing) = peers.iter_mut().find(|p| p.name == peer_name) {
+                if !existing.teams.contains(&team.name) {
+                    existing.teams.push(team.name.clone());
+                }
+                continue;
+            }
+
+            let path_str = member_path
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_default();
+
+            let peer_ac = member_path
+                .map(|p| p.join(crate::config::agent_local_dir_name()))
+                .unwrap_or_else(|| PathBuf::from(&path_str).join(crate::config::agent_local_dir_name()));
+
+            let status = if peer_ac.join("active").exists() {
+                "active"
+            } else {
+                "unknown"
+            };
+
+            let peer_config: AgentLocalConfig = peer_ac
+                .join("config.json")
+                .to_str()
+                .and_then(|p| std::fs::read_to_string(p).ok())
+                .and_then(|c| serde_json::from_str(&c).ok())
+                .unwrap_or_default();
+
+            peers.push(PeerInfo {
+                name: peer_name,
+                path: path_str,
+                status: status.to_string(),
+                role: member_path
+                    .map(|p| read_role(&p.to_string_lossy()))
+                    .unwrap_or_else(|| "No role description available.".to_string()),
+                teams: vec![team.name.clone()],
+                last_coding_agent: peer_config.tooling.last_coding_agent,
+                coding_agents: peer_config.tooling.coding_agents,
+            });
         }
     }
 

@@ -6,8 +6,9 @@ use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use uuid::Uuid;
 
-use crate::config::dark_factory::{self, DarkFactoryConfig};
+use crate::config::agent_config::AgentLocalConfig;
 use crate::config::settings::SettingsState;
+use crate::config::teams;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
@@ -311,8 +312,8 @@ impl MailboxPoller {
             }
 
             // Validate peer visibility (team membership) — skipped for master token
-            let dark_factory = dark_factory::load_dark_factory();
-            if !self.can_reach(&msg.from, &msg.to, &dark_factory) {
+            let discovered_teams = teams::discover_teams();
+            if !self.can_reach(&msg.from, &msg.to, &discovered_teams) {
                 log::warn!("[mailbox] Routing check FAILED: '{}' cannot reach '{}'", msg.from, msg.to);
                 return self.reject_message(path, &msg, "Sender cannot reach destination").await;
             }
@@ -824,16 +825,17 @@ impl MailboxPoller {
             }
         }
 
-        // Check teams config for member paths
-        let dark_factory = dark_factory::load_dark_factory();
-        for team in &dark_factory.teams {
-            for member in &team.members {
-                let normalized = member.path.replace('\\', "/");
-                if self.agent_name_from_path(&member.path) == agent_name
+        // Check discovered teams for member paths
+        let discovered_teams = teams::discover_teams();
+        for team in &discovered_teams {
+            for agent_path in &team.agent_paths {
+                let path_str = agent_path.to_string_lossy().to_string();
+                let normalized = path_str.replace('\\', "/");
+                if self.agent_name_from_path(&path_str) == agent_name
                     || normalized.ends_with(agent_name)
                     || normalized.contains(&format!("/{}", agent_name))
                 {
-                    return Some(member.path.clone());
+                    return Some(path_str);
                 }
             }
         }
@@ -888,11 +890,11 @@ impl MailboxPoller {
 
     /// Check if sender can reach destination via team membership.
     /// Only agents in the same team can communicate — no parent directory fallback.
-    fn can_reach(&self, from: &str, to: &str, config: &DarkFactoryConfig) -> bool {
-        if config.teams.is_empty() {
-            return false; // No teams configured → no communication
+    fn can_reach(&self, from: &str, to: &str, discovered_teams: &[teams::DiscoveredTeam]) -> bool {
+        if discovered_teams.is_empty() {
+            return false; // No teams discovered → no communication
         }
-        crate::phone::manager::can_communicate(from, to, config)
+        crate::phone::manager::can_communicate(from, to, discovered_teams)
     }
 
     /// Resolve which agent CLI to use for wake-and-sleep mode.
@@ -917,7 +919,7 @@ impl MailboxPoller {
                 .join(crate::config::agent_local_dir_name())
                 .join("config.json");
             if let Ok(content) = std::fs::read_to_string(&config_path) {
-                if let Ok(local_config) = serde_json::from_str::<crate::config::dark_factory::AgentLocalConfig>(&content) {
+                if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&content) {
                     if let Some(last_agent) = local_config.tooling.last_coding_agent.as_deref() {
                         if let Some(agent) = cfg.agents.iter().find(|a| a.id == last_agent) {
                             return Some((agent.command.clone(), vec![]));

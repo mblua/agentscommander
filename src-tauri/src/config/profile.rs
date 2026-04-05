@@ -25,7 +25,7 @@ pub fn app_title() -> &'static str {
     }
 }
 
-/// Title suffix appended to secondary windows (guide, dark factory).
+/// Title suffix appended to secondary windows (guide, etc.).
 pub fn app_title_suffix() -> &'static str {
     match BUILD_PROFILE {
         "dev" => "Agents Commander New",

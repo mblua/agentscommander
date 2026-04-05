@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
-use crate::config::dark_factory;
+use crate::config::teams;
 use crate::phone::manager::can_communicate;
 
 #[derive(Args)]
@@ -146,10 +146,10 @@ pub fn execute(args: SendArgs) -> i32 {
     });
 
     if !is_root {
-        // Load teams config and check if sender can reach destination BEFORE
+        // Load discovered teams and check if sender can reach destination BEFORE
         // writing to outbox. Fail immediately with a clear error if not.
-        let config = dark_factory::load_dark_factory();
-        if config.teams.is_empty() || !can_communicate(&sender, &args.to, &config) {
+        let discovered = teams::discover_teams();
+        if discovered.is_empty() || !can_communicate(&sender, &args.to, &discovered) {
             eprintln!(
                 "Error: routing rejected — '{}' cannot reach '{}'. \
                  Check team membership and coordinator rules.",

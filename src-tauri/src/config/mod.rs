@@ -1,6 +1,7 @@
+pub mod agent_config;
 pub mod claude_settings;
-pub mod dark_factory;
 pub mod profile;
+pub mod teams;
 pub mod session_context;
 pub mod sessions_persistence;
 pub mod settings;
