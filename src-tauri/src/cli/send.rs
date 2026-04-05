@@ -62,12 +62,12 @@ pub struct SendArgs {
     #[arg(long)]
     pub root: Option<String>,
 
-    /// Write message to a specific outbox directory instead of <root>/.agentscommander/outbox/
+    /// Write message to a specific outbox directory instead of <root>/<local-dir>/outbox/
     #[arg(long)]
     pub outbox: Option<String>,
 }
 
-/// Outbox message written to .agentscommander/outbox/<uuid>.json
+/// Outbox message written to <local-dir>/outbox/<uuid>.json
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OutboxMessage {
