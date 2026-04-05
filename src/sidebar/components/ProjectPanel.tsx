@@ -35,11 +35,13 @@ function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | und
   return sessionsStore.findSessionByName(replicaSessionName(wg, replica));
 }
 
-/** Check if a replica is the coordinator of any team in the project */
-function isReplicaCoordinator(replica: AcAgentReplica, projectFolder: string, teams: AcTeam[]): boolean {
+/** Check if a replica is the coordinator of its workgroup's team */
+function isReplicaCoordinator(replica: AcAgentReplica, projectFolder: string, teams: AcTeam[], teamName?: string): boolean {
   const project = replica.originProject || projectFolder;
   const fullRef = `${project}/${replica.name}`;
-  return teams.some((t) => t.coordinator === fullRef);
+  if (!teamName) return false;
+  const team = teams.find((t) => t.name === teamName);
+  return team ? team.coordinator === fullRef : false;
 }
 
 /** Compute CSS class for replica status dot */
@@ -374,7 +376,7 @@ const ProjectPanel: Component = () => {
                                                   if (!name) return null;
                                                   return replica.repoBranch ? `${name}/${replica.repoBranch}` : name;
                                                 };
-                                                const isCoord = () => isReplicaCoordinator(replica, proj.folderName, proj.teams);
+                                                const isCoord = () => isReplicaCoordinator(replica, proj.folderName, proj.teams, wg.teamName);
                                                 return (
                                                   <div
                                                     class="ac-discovery-item"
