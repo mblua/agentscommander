@@ -142,6 +142,20 @@ pub fn set_last_coding_agent(
     Ok(())
 }
 
+/// Ensure a key in a JSON map is an object, inserting `{}` if missing or resetting if corrupted.
+fn ensure_object<'a>(
+    map: &'a mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    context: &Path,
+) -> &'a mut serde_json::Map<String, serde_json::Value> {
+    let val = map.entry(key).or_insert_with(|| serde_json::json!({}));
+    if !val.is_object() {
+        log::warn!("upsert_config: '{}' was not an object at {:?}, resetting", key, context);
+        *val = serde_json::json!({});
+    }
+    val.as_object_mut().expect("just set to object")
+}
+
 /// Read-modify-write a single config.json: upsert tooling fields while preserving all others.
 /// Uses serde_json::Value to avoid dropping unknown top-level fields (e.g. `identity`, `repos`)
 /// that aren't part of the AgentLocalConfig struct.
@@ -153,37 +167,26 @@ fn upsert_config(
     let mut root: serde_json::Value = if config_path.exists() {
         let content = std::fs::read_to_string(config_path)
             .map_err(|e| format!("Failed to read config: {}", e))?;
-        serde_json::from_str(&content).unwrap_or_else(|e| {
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_else(|e| {
             log::warn!("Failed to parse config at {:?}, starting fresh: {}", config_path, e);
             serde_json::json!({})
-        })
+        });
+        if !parsed.is_object() {
+            log::warn!("upsert_config: root at {:?} is not an object, starting fresh", config_path);
+            serde_json::json!({})
+        } else {
+            parsed
+        }
     } else {
         serde_json::json!({})
     };
 
-    let obj = root.as_object_mut()
-        .ok_or_else(|| "config.json root is not an object".to_string())?;
+    let obj = root.as_object_mut().expect("guaranteed object above");
 
-    // Ensure "tooling" exists as an object; reset if corrupted
-    let tooling_val = obj.entry("tooling".to_string())
-        .or_insert_with(|| serde_json::json!({}));
-    if !tooling_val.is_object() {
-        log::warn!("upsert_config: 'tooling' was not an object at {:?}, resetting", config_path);
-        *tooling_val = serde_json::json!({});
-    }
-    let tooling = tooling_val.as_object_mut().expect("just set to object");
-
+    let tooling = ensure_object(obj, "tooling", config_path);
     tooling.insert("lastCodingAgent".to_string(), serde_json::json!(agent_id));
 
-    // Ensure "codingAgents" exists as an object; reset if corrupted
-    let ca_val = tooling.entry("codingAgents".to_string())
-        .or_insert_with(|| serde_json::json!({}));
-    if !ca_val.is_object() {
-        log::warn!("upsert_config: 'codingAgents' was not an object at {:?}, resetting", config_path);
-        *ca_val = serde_json::json!({});
-    }
-    let coding_agents = ca_val.as_object_mut().expect("just set to object");
-
+    let coding_agents = ensure_object(tooling, "codingAgents", config_path);
     let entry_val = serde_json::to_value(entry)
         .map_err(|e| format!("Failed to serialize entry: {}", e))?;
     coding_agents.insert(agent_id.to_string(), entry_val);
