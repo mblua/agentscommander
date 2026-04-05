@@ -176,8 +176,10 @@ pub async fn create_session_inner(
                 None => {
                     let settings = app.state::<SettingsState>();
                     let cfg = settings.read().await;
-                    crate::config::settings::find_agent_config_with_fallback(&cfg.agents, aid)
-                        .map(|a| a.label)
+                    cfg.agents
+                        .iter()
+                        .find(|a| a.id == *aid)
+                        .map(|a| a.label.clone())
                         .unwrap_or_else(|| {
                             log::warn!("Could not resolve label for agent_id='{}' — defaulting to 'Unknown'", aid);
                             "Unknown".to_string()
@@ -224,11 +226,10 @@ pub async fn create_session(
             .unwrap_or_else(|| "C:\\".to_string())
     });
 
-    // If agentId provided and shell not explicitly set, use that agent's command.
-    // Falls back to shared settings if the agent isn't in per-instance config.
+    // If agentId provided and shell not explicitly set, use that agent's command
     let (shell, shell_args, agent_label) = match (&shell, &agent_id) {
         (None, Some(aid)) => {
-            if let Some(agent) = crate::config::settings::find_agent_config_with_fallback(&cfg.agents, aid) {
+            if let Some(agent) = cfg.agents.iter().find(|a| a.id == *aid) {
                 log::info!("[session] Agent resolved: id={:?}, label={:?}, command={:?}", agent.id, agent.label, agent.command);
                 let parts: Vec<String> = agent.command.split_whitespace().map(|s| s.to_string()).collect();
                 if let Some((cmd, args)) = parts.split_first() {
@@ -237,7 +238,7 @@ pub async fn create_session(
                     (cfg.default_shell.clone(), cfg.default_shell_args.clone(), Some(agent.label.clone()))
                 }
             } else {
-                log::warn!("[session] Agent NOT found for aid={:?} in any settings. Falling back to default shell.", aid);
+                log::warn!("[session] Agent NOT found for aid={:?}. Falling back to default shell.", aid);
                 (cfg.default_shell.clone(), cfg.default_shell_args.clone(), None)
             }
         }
@@ -245,8 +246,7 @@ pub async fn create_session(
             let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
             let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
             let al = agent_id.as_ref().and_then(|aid| {
-                crate::config::settings::find_agent_config_with_fallback(&cfg.agents, aid)
-                    .map(|a| a.label)
+                cfg.agents.iter().find(|a| a.id == *aid).map(|a| a.label.clone())
             });
             (s, sa, al)
         }
