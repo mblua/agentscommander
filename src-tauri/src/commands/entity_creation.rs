@@ -485,8 +485,9 @@ pub async fn delete_team(
         return Err(format!("Team '{}' not found", team_name));
     }
 
-    // Delete associated workgroups (wg-N-{team_name}/) to prevent orphans
+    // Collect associated workgroup dirs (wg-N-{team_name}/)
     let wg_suffix = format!("-{}", team_name);
+    let mut wg_dirs: Vec<PathBuf> = Vec::new();
     if let Ok(entries) = std::fs::read_dir(&base) {
         for entry in entries.flatten() {
             if !entry.path().is_dir() {
@@ -497,13 +498,33 @@ pub async fn delete_team(
             if name_str.starts_with("wg-") && name_str.ends_with(&wg_suffix) {
                 let middle = &name_str[3..name_str.len() - wg_suffix.len()];
                 if middle.parse::<u32>().is_ok() {
-                    if let Err(e) = std::fs::remove_dir_all(entry.path()) {
-                        log::warn!("[entity_creation] Failed to delete workgroup {}: {}", name_str, e);
-                    } else {
-                        log::info!("[entity_creation] Deleted orphan workgroup: {}", name_str);
-                    }
+                    wg_dirs.push(entry.path());
                 }
             }
+        }
+    }
+
+    // Check workgroup repos for dirty git state before deleting
+    let dirty_repos = check_workgroup_repos_dirty(&wg_dirs);
+    if !dirty_repos.is_empty() {
+        let list = dirty_repos
+            .iter()
+            .map(|(repo, reason)| format!("  - {} ({})", repo, reason))
+            .collect::<Vec<_>>()
+            .join("\n");
+        return Err(format!(
+            "Cannot delete team: the following repos have pending work:\n{}\n\nCommit or push changes before deleting.",
+            list
+        ));
+    }
+
+    // Delete workgroups
+    for wg_dir in &wg_dirs {
+        let wg_name = wg_dir.file_name().unwrap_or_default().to_string_lossy();
+        if let Err(e) = std::fs::remove_dir_all(wg_dir) {
+            log::warn!("[entity_creation] Failed to delete workgroup {}: {}", wg_name, e);
+        } else {
+            log::info!("[entity_creation] Deleted workgroup: {}", wg_name);
         }
     }
 
@@ -592,6 +613,92 @@ pub async fn get_team_config(
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
+
+/// Check all repo-* dirs inside the given workgroup dirs for dirty git state.
+/// Returns a list of (repo_display_name, reason) for repos with pending work.
+fn check_workgroup_repos_dirty(wg_dirs: &[PathBuf]) -> Vec<(String, String)> {
+    #[cfg(windows)]
+    const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+    let mut dirty: Vec<(String, String)> = Vec::new();
+
+    for wg_dir in wg_dirs {
+        let wg_name = wg_dir
+            .file_name()
+            .unwrap_or_default()
+            .to_string_lossy()
+            .to_string();
+
+        let entries = match std::fs::read_dir(wg_dir) {
+            Ok(e) => e,
+            Err(_) => continue,
+        };
+
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !path.is_dir() {
+                continue;
+            }
+            let dir_name = entry.file_name();
+            let dir_name_str = dir_name.to_string_lossy();
+            if !dir_name_str.starts_with("repo-") {
+                continue;
+            }
+            if !path.join(".git").exists() {
+                continue;
+            }
+
+            let display = format!("{}/{}", wg_name, dir_name_str);
+            let mut reasons: Vec<&str> = Vec::new();
+
+            // Check for uncommitted changes (staged + unstaged + untracked)
+            let mut cmd = std::process::Command::new("git");
+            cmd.args(["status", "--porcelain"])
+                .current_dir(&path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                #[allow(unused_imports)]
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(CREATE_NO_WINDOW);
+            }
+            if let Ok(output) = cmd.output() {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                if !stdout.trim().is_empty() {
+                    reasons.push("uncommitted changes");
+                }
+            }
+
+            // Check for unpushed commits
+            let mut cmd2 = std::process::Command::new("git");
+            cmd2.args(["log", "@{upstream}..HEAD", "--oneline"])
+                .current_dir(&path)
+                .stdout(std::process::Stdio::piped())
+                .stderr(std::process::Stdio::null());
+            #[cfg(windows)]
+            {
+                #[allow(unused_imports)]
+                use std::os::windows::process::CommandExt;
+                cmd2.creation_flags(CREATE_NO_WINDOW);
+            }
+            if let Ok(output) = cmd2.output() {
+                if output.status.success() {
+                    let stdout = String::from_utf8_lossy(&output.stdout);
+                    if !stdout.trim().is_empty() {
+                        reasons.push("unpushed commits");
+                    }
+                }
+            }
+
+            if !reasons.is_empty() {
+                dirty.push((display, reasons.join(", ")));
+            }
+        }
+    }
+
+    dirty
+}
 
 /// Scan .ac-new/ for existing wg-*-{team_name}/ dirs and return the next N.
 fn determine_next_wg_number(ac_new_dir: &Path, team_name: &str) -> u32 {

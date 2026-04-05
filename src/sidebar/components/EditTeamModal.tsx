@@ -71,11 +71,30 @@ const EditTeamModal: Component<{
         path: a.path,
         projectName: a.projectName,
       }));
-      setAllAgents(entries);
 
-      // Pre-select agents by matching raw config paths to listAllAgents paths.
       // Normalize paths for case/separator differences on Windows.
       const norm = (p: string) => p.replace(/\\/g, "/").toLowerCase();
+      const discoveredNorm = new Set(entries.map((e) => norm(e.path)));
+
+      // Synthesize entries for cross-project agents not found in discovered agents.
+      // Config stores absolute paths like C:\...\project\.ac-new\_agent_name
+      for (const configPath of teamConfig.agents) {
+        if (!discoveredNorm.has(norm(configPath))) {
+          const normalized = configPath.replace(/\\/g, "/");
+          const parts = normalized.split("/");
+          // Extract agent name from _agent_{name} dir
+          const agentDir = parts[parts.length - 1] || "";
+          const agentName = agentDir.replace(/^_agent_/, "");
+          // Extract project name: parent of .ac-new
+          const acNewIdx = parts.lastIndexOf(".ac-new");
+          const projectName = acNewIdx > 0 ? parts[acNewIdx - 1] : "external";
+          entries.push({ name: agentName, path: configPath, projectName });
+        }
+      }
+
+      setAllAgents(entries);
+
+      // Pre-select agents matching config paths
       const configAgentNorm = new Set(teamConfig.agents.map(norm));
       const matched = new Set<string>();
       for (const entry of entries) {
