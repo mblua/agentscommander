@@ -467,7 +467,7 @@ pub fn run() {
             .position(sidebar_geo.x, sidebar_geo.y)
             .build()?;
 
-            // Create Terminal window
+            // Create Terminal window (hidden until a session is active)
             let terminal = WebviewWindowBuilder::new(
                 app,
                 "terminal",
@@ -478,6 +478,7 @@ pub fn run() {
             .expect("Failed to set terminal icon")
             .min_inner_size(400.0, 300.0)
             .decorations(false)
+            .visible(false)
             .zoom_hotkeys_enabled(true)
             .inner_size(terminal_geo.width, terminal_geo.height)
             .position(terminal_geo.x, terminal_geo.y)

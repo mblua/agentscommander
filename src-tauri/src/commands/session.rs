@@ -165,6 +165,13 @@ pub async fn create_session_inner(
     let info = SessionInfo::from(&session);
     let _ = app.emit("session_created", info.clone());
 
+    // Show the terminal window when a session is created
+    if let Some(win) = app.get_webview_window("terminal") {
+        if let Err(e) = win.show() {
+            log::warn!("[session] Failed to show terminal window: {}", e);
+        }
+    }
+
     // Save lastCodingAgent + codingAgents (skip for temp sessions)
     if !skip_tooling_save {
         if let Some(ref aid) = agent_id {
@@ -368,6 +375,15 @@ pub async fn destroy_session(
             "session_switched",
             serde_json::json!({ "id": new_id.to_string() }),
         );
+    }
+
+    // Hide the terminal window when no sessions remain
+    if mgr.list_sessions().await.is_empty() {
+        if let Some(win) = app.get_webview_window("terminal") {
+            if let Err(e) = win.hide() {
+                log::warn!("[session] Failed to hide terminal window: {}", e);
+            }
+        }
     }
 
     Ok(())

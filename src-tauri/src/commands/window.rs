@@ -103,12 +103,25 @@ pub fn open_in_explorer(path: String) -> Result<(), String> {
 }
 
 /// Ensure the main terminal window exists. Recreates it if it was closed.
+/// Does nothing if no sessions are active (terminal stays hidden).
 #[tauri::command]
-pub async fn ensure_terminal_window(app: AppHandle) -> Result<(), String> {
+pub async fn ensure_terminal_window(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+) -> Result<(), String> {
     use tauri::{WebviewUrl, WebviewWindowBuilder};
 
-    // Already exists — just focus it
+    // Don't show the terminal if no sessions exist
+    {
+        let mgr = session_mgr.read().await;
+        if mgr.list_sessions().await.is_empty() {
+            return Ok(());
+        }
+    }
+
+    // Already exists — show it (may be hidden) and focus it
     if let Some(win) = app.get_webview_window("terminal") {
+        win.show().map_err(|e| e.to_string())?;
         win.set_focus().map_err(|e| e.to_string())?;
         return Ok(());
     }
