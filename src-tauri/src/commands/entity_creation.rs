@@ -485,6 +485,28 @@ pub async fn delete_team(
         return Err(format!("Team '{}' not found", team_name));
     }
 
+    // Delete associated workgroups (wg-N-{team_name}/) to prevent orphans
+    let wg_suffix = format!("-{}", team_name);
+    if let Ok(entries) = std::fs::read_dir(&base) {
+        for entry in entries.flatten() {
+            if !entry.path().is_dir() {
+                continue;
+            }
+            let name = entry.file_name();
+            let name_str = name.to_string_lossy();
+            if name_str.starts_with("wg-") && name_str.ends_with(&wg_suffix) {
+                let middle = &name_str[3..name_str.len() - wg_suffix.len()];
+                if middle.parse::<u32>().is_ok() {
+                    if let Err(e) = std::fs::remove_dir_all(entry.path()) {
+                        log::warn!("[entity_creation] Failed to delete workgroup {}: {}", name_str, e);
+                    } else {
+                        log::info!("[entity_creation] Deleted orphan workgroup: {}", name_str);
+                    }
+                }
+            }
+        }
+    }
+
     std::fs::remove_dir_all(&team_dir)
         .map_err(|e| format!("Failed to delete team directory: {}", e))?;
 

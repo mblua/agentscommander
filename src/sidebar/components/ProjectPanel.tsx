@@ -637,7 +637,7 @@ const ProjectPanel: Component = () => {
                     </div>
                     <div class="new-agent-form">
                       <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
-                        Delete team <strong>{deletingTeam()!.name}</strong>? This will remove the team configuration. This action cannot be undone.
+                        Delete team <strong>{deletingTeam()!.name}</strong>? This will remove the team configuration and all associated workgroups. This action cannot be undone.
                       </p>
                       <Show when={deleteError()}>
                         <div class="new-agent-error">{deleteError()}</div>
