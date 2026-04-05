@@ -1,4 +1,4 @@
-import { Component, onMount, onCleanup } from "solid-js";
+import { Component, createSignal, onMount, onCleanup, Show } from "solid-js";
 import { isTauri } from "../shared/platform";
 import type { UnlistenFn } from "../shared/transport";
 import {
@@ -29,9 +29,11 @@ import { settingsStore } from "../shared/stores/settings";
 import Titlebar from "./components/Titlebar";
 import ActionBar from "./components/ActionBar";
 import ProjectPanel from "./components/ProjectPanel";
+import OnboardingModal from "./components/OnboardingModal";
 import "./styles/sidebar.css";
 
 const SidebarApp: Component = () => {
+  const [showOnboarding, setShowOnboarding] = createSignal(false);
   const unlisteners: UnlistenFn[] = [];
   let shortcutHandler: ((e: KeyboardEvent) => void) | null = null;
   let cleanupZoom: (() => void) | null = null;
@@ -80,6 +82,12 @@ const SidebarApp: Component = () => {
 
     // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();
+
+    // First-run: show onboarding if no coding agents configured
+    const loaded = settingsStore.current;
+    if (!loaded?.agents || loaded.agents.length === 0) {
+      setShowOnboarding(true);
+    }
 
     // Load saved project if any
     await projectStore.initFromSettings(
@@ -180,13 +188,18 @@ const SidebarApp: Component = () => {
   });
 
   return (
-    <div class="sidebar-layout">
-      <Titlebar />
-      <ActionBar />
-      <div class="sidebar-scrollable">
-        <ProjectPanel />
+    <>
+      <div class="sidebar-layout">
+        <Titlebar />
+        <ActionBar />
+        <div class="sidebar-scrollable">
+          <ProjectPanel />
+        </div>
       </div>
-    </div>
+      <Show when={showOnboarding()}>
+        <OnboardingModal onClose={() => setShowOnboarding(false)} />
+      </Show>
+    </>
   );
 };
 
