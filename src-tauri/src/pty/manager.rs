@@ -725,7 +725,6 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) -> bool {
             "# BinaryPath: {binary_path}\n",
             "# LocalDir: {local_dir}\n",
             "# === End Credentials ===\n",
-            "\r",
         ),
         token = session.token,
         root = session.working_directory,
@@ -743,7 +742,7 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) -> bool {
         app,
         session_id,
         &cred_block,
-        false,
+        true, // Claude Code needs explicit Enter (submit=true) to process the injected text
         crate::pty::transcript::InjectReason::TokenRefresh,
         None,
     )
