@@ -38,7 +38,7 @@ const AGENT_PRESETS: Record<string, Omit<AgentConfig, "id">> = {
     label: "Gemini CLI",
     command: "gemini --approval-mode=yolo -m gemini-3-pro-preview",
     color: "#4285f4",
-    gitPullBefore: true,
+    gitPullBefore: false,
     excludeGlobalClaudeMd: false,
   },
 };
