@@ -35,6 +35,14 @@ function replicaSession(wg: AcWorkgroup, replica: AcAgentReplica): Session | und
   return sessionsStore.findSessionByName(replicaSessionName(wg, replica));
 }
 
+/** Check if a replica is the coordinator of any team in the project */
+function isReplicaCoordinator(replicaName: string, projectFolder: string, teams: AcTeam[]): boolean {
+  const atIdx = replicaName.indexOf("@");
+  const rawAgent = atIdx > 0 ? replicaName.substring(0, atIdx) : replicaName;
+  const fullName = `${projectFolder}/${rawAgent}`;
+  return teams.some((t) => t.coordinator === fullName);
+}
+
 /** Compute CSS class for replica status dot */
 function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): string {
   const session = replicaSession(wg, replica);
@@ -354,6 +362,9 @@ const ProjectPanel: Component = () => {
                                           <div class="ac-discovery-item-info">
                                             <span class="ac-discovery-item-name">{replica.name}</span>
                                             <div class="ac-discovery-badges">
+                                              <Show when={isReplicaCoordinator(replica.name, proj.folderName, proj.teams)}>
+                                                <span class="ac-discovery-badge coord">coordinator</span>
+                                              </Show>
                                               <Show when={branchLabel()}>
                                                 <span class="ac-discovery-badge branch">{branchLabel()}</span>
                                               </Show>
