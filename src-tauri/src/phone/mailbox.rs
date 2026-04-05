@@ -751,12 +751,14 @@ impl MailboxPoller {
             sessions.iter().map(|s| format!("{}={} status={:?} name={}", s.id, s.working_directory, s.status, s.name)).collect::<Vec<_>>()
         );
 
-        // Collect all CWD-matching sessions
+        // Collect all CWD-matching sessions (also match via agent_name_from_path for WG replicas
+        // where CWD contains __agent_ prefix that doesn't appear in the logical agent name)
         let mut matches: Vec<&crate::session::session::SessionInfo> = sessions
             .iter()
             .filter(|s| {
                 let normalized = s.working_directory.replace('\\', "/");
-                normalized.ends_with(agent_name)
+                self.agent_name_from_path(&s.working_directory) == agent_name
+                    || normalized.ends_with(agent_name)
                     || normalized.contains(&format!("/{}", agent_name))
             })
             .collect();
@@ -801,7 +803,10 @@ impl MailboxPoller {
 
         for (_, cwd, _, _) in &dirs {
             let normalized = cwd.replace('\\', "/");
-            if normalized.ends_with(agent_name) || normalized.contains(&format!("/{}", agent_name)) {
+            if self.agent_name_from_path(cwd) == agent_name
+                || normalized.ends_with(agent_name)
+                || normalized.contains(&format!("/{}", agent_name))
+            {
                 return Some(cwd.clone());
             }
         }
