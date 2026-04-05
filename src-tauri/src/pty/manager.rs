@@ -624,10 +624,16 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
         }
     };
 
-    let binary_name = std::env::current_exe()
-        .ok()
+    let exe_path = std::env::current_exe().ok();
+    let binary_name = exe_path.as_ref()
         .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
         .unwrap_or_else(|| "agentscommander".to_string());
+    let binary_path = {
+        let raw = exe_path.as_ref()
+            .map(|p| p.to_string_lossy().to_string())
+            .unwrap_or_else(|| "agentscommander.exe".to_string());
+        raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
+    };
     let local_dir = format!(".{}", &binary_name);
 
     let cred_block = format!(
@@ -637,6 +643,7 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
             "# Token: {token}\n",
             "# Root: {root}\n",
             "# Binary: {binary}\n",
+            "# BinaryPath: {binary_path}\n",
             "# LocalDir: {local_dir}\n",
             "# === End Credentials ===\n",
             "\r",
@@ -644,6 +651,7 @@ async fn inject_credentials(app: &AppHandle, session_id: Uuid) {
         token = session.token,
         root = session.working_directory,
         binary = binary_name,
+        binary_path = binary_path,
         local_dir = local_dir,
     );
 
