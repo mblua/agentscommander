@@ -233,6 +233,7 @@ export interface AcAgentReplica {
   name: string;
   path: string;
   identityPath?: string;
+  originProject?: string;
   preferredAgentId?: string;
   repoPaths: string[];
   repoBranch?: string;

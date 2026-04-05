@@ -352,7 +352,7 @@ const ProjectPanel: Component = () => {
                                         >
                                           <div class={`session-item-status ${dotClass()}`} />
                                           <div class="ac-discovery-item-info">
-                                            <span class="ac-discovery-item-name">{replica.name}</span>
+                                            <span class="ac-discovery-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                                             <div class="ac-discovery-badges">
                                               <Show when={branchLabel()}>
                                                 <span class="ac-discovery-badge branch">{branchLabel()}</span>
@@ -379,6 +379,7 @@ const ProjectPanel: Component = () => {
                                       <SessionItem
                                         session={patched()}
                                         isActive={s().id === sessionsStore.activeId}
+                                        originProject={replica.originProject}
                                       />
                                     );
                                   }}
