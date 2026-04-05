@@ -2,6 +2,14 @@ import { Component, createSignal, For, Show, onMount, onCleanup } from "solid-js
 import { Portal } from "solid-js/web";
 import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../shared/types";
 import { AcDiscoveryAPI, SessionAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
+import AgentPickerModal from "./AgentPickerModal";
+
+interface PendingLaunch {
+  path: string;
+  sessionName: string;
+  gitBranchSource?: string;
+  gitBranchPrefix?: string;
+}
 
 const AcDiscoveryPanel: Component = () => {
   const [agents, setAgents] = createSignal<AcAgentMatrix[]>([]);
@@ -23,7 +31,13 @@ const AcDiscoveryPanel: Component = () => {
     return teams().some((t) => t.coordinator === agentName);
   };
 
+  const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
+
   const handleAgentClick = (agent: AcAgentMatrix) => {
+    if (!agent.preferredAgentId) {
+      setPendingLaunch({ path: agent.path, sessionName: agent.name });
+      return;
+    }
     SessionAPI.create({
       cwd: agent.path,
       sessionName: agent.name,
@@ -38,11 +52,20 @@ const AcDiscoveryPanel: Component = () => {
 
     if (repoPaths.length === 1) {
       gitBranchSource = repoPaths[0];
-      // Derive repo name from directory name, strip "repo-" prefix if present
       const dirName = repoPaths[0].replace(/\\/g, "/").split("/").pop() ?? "";
       gitBranchPrefix = dirName.startsWith("repo-") ? dirName.slice(5) : dirName;
     } else if (repoPaths.length > 1) {
       gitBranchPrefix = "multi-repo";
+    }
+
+    if (!replica.preferredAgentId) {
+      setPendingLaunch({
+        path: replica.path,
+        sessionName: `${wg.name}/${replica.name}`,
+        gitBranchSource,
+        gitBranchPrefix,
+      });
+      return;
     }
 
     SessionAPI.create({
@@ -313,6 +336,27 @@ const AcDiscoveryPanel: Component = () => {
               Context Files
             </button>
           </div>
+        </Portal>
+      )}
+
+      {/* Agent picker for agents/replicas without a preferredAgentId */}
+      {pendingLaunch() && (
+        <Portal>
+          <AgentPickerModal
+            sessionName={pendingLaunch()!.sessionName}
+            onSelect={(agent) => {
+              const pending = pendingLaunch()!;
+              SessionAPI.create({
+                cwd: pending.path,
+                sessionName: pending.sessionName,
+                agentId: agent.id,
+                gitBranchSource: pending.gitBranchSource,
+                gitBranchPrefix: pending.gitBranchPrefix,
+              });
+              setPendingLaunch(null);
+            }}
+            onClose={() => setPendingLaunch(null)}
+          />
         </Portal>
       )}
 

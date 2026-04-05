@@ -9,6 +9,14 @@ import SessionItem from "./SessionItem";
 import NewEntityAgentModal from "./NewEntityAgentModal";
 import NewTeamModal from "./NewTeamModal";
 import NewWorkgroupModal from "./NewWorkgroupModal";
+import AgentPickerModal from "./AgentPickerModal";
+
+interface PendingLaunch {
+  path: string;
+  sessionName: string;
+  gitBranchSource?: string;
+  gitBranchPrefix?: string;
+}
 
 /** Derive the repo name from a replica's repoPaths (strip 'repo-' prefix) */
 function replicaRepoName(replica: AcAgentReplica): string | undefined {
@@ -47,6 +55,8 @@ const ProjectPanel: Component = () => {
   });
   onCleanup(() => unlistenBranch?.());
 
+  const [pendingLaunch, setPendingLaunch] = createSignal<PendingLaunch | null>(null);
+
   const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
     const existing = replicaSession(wg, replica);
     if (existing) {
@@ -76,6 +86,16 @@ const ProjectPanel: Component = () => {
       gitBranchPrefix = "multi-repo";
     }
 
+    if (!replica.preferredAgentId) {
+      setPendingLaunch({
+        path: replica.path,
+        sessionName: replicaSessionName(wg, replica),
+        gitBranchSource,
+        gitBranchPrefix,
+      });
+      return;
+    }
+
     SessionAPI.create({
       cwd: replica.path,
       sessionName: replicaSessionName(wg, replica),
@@ -99,6 +119,12 @@ const ProjectPanel: Component = () => {
       }
       return;
     }
+
+    if (!agent.preferredAgentId) {
+      setPendingLaunch({ path: agent.path, sessionName: agent.name });
+      return;
+    }
+
     SessionAPI.create({
       cwd: agent.path,
       sessionName: agent.name,
@@ -107,6 +133,7 @@ const ProjectPanel: Component = () => {
   };
 
   return (
+    <>
     <For each={projectStore.projects}>
       {(proj) => {
         const [collapsed, setCollapsed] = createSignal(false);
@@ -507,6 +534,28 @@ const ProjectPanel: Component = () => {
         );
       }}
     </For>
+
+    {/* Agent picker for agents/replicas without a preferredAgentId */}
+    {pendingLaunch() && (
+      <Portal>
+        <AgentPickerModal
+          sessionName={pendingLaunch()!.sessionName}
+          onSelect={(agent) => {
+            const pending = pendingLaunch()!;
+            SessionAPI.create({
+              cwd: pending.path,
+              sessionName: pending.sessionName,
+              agentId: agent.id,
+              gitBranchSource: pending.gitBranchSource,
+              gitBranchPrefix: pending.gitBranchPrefix,
+            });
+            setPendingLaunch(null);
+          }}
+          onClose={() => setPendingLaunch(null)}
+        />
+      </Portal>
+    )}
+    </>
   );
 };
 
