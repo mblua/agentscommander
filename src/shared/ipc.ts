@@ -331,6 +331,17 @@ export const GuideAPI = {
   open: () => transport.invoke<void>("open_guide_window"),
 };
 
+// Theme sync across windows
+export function emitThemeChanged(light: boolean): Promise<void> {
+  return transport.emit("theme_changed", { light });
+}
+
+export function onThemeChanged(
+  callback: (data: { light: boolean }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ light: boolean }>("theme_changed", callback);
+}
+
 export function onLastPrompt(
   callback: (data: { sessionId: string; text: string }) => void
 ): Promise<UnlistenFn> {
