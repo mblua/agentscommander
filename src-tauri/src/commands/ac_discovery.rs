@@ -8,11 +8,11 @@ use tauri::{AppHandle, Emitter, State};
 use crate::config::settings::SettingsState;
 use crate::session::manager::SessionManager;
 
-/// Read `tooling.lastCodingAgent` from the per-instance config.json inside
-/// the given directory. Looks in `<dir>/<agent_local_dir_name>/config.json`.
+/// Read `tooling.lastCodingAgent` from the agent's root config.json.
+/// All agent directories have `<dir>/config.json` with tooling data,
+/// regardless of which app instance wrote it.
 fn read_preferred_agent_id(dir: &Path) -> Option<String> {
-    let local_dir = crate::config::agent_local_dir_name();
-    let config_path = dir.join(local_dir).join("config.json");
+    let config_path = dir.join("config.json");
     std::fs::read_to_string(&config_path)
         .ok()
         .and_then(|content| serde_json::from_str::<serde_json::Value>(&content).ok())

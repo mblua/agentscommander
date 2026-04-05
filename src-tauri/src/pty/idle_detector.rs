@@ -87,39 +87,31 @@ impl IdleDetector {
             loop {
                 std::thread::sleep(CHECK_INTERVAL);
 
-                // Collect newly-idle sessions under the lock, then call
-                // callbacks AFTER releasing both locks. This avoids:
-                //  1. Panic: Instant::now() was captured before the lock,
-                //     so a PTY thread could insert a timestamp newer than
-                //     `now`, making duration_since() panic.
-                //  2. Contention: on_idle callbacks (Tauri emit, transcript
-                //     write) ran while holding both locks, blocking every
-                //     PTY read thread.
-                let newly_idle: Vec<Uuid> = {
-                    let activity = detector.activity.lock().unwrap();
-                    let mut idle_set = detector.idle_set.lock().unwrap();
-                    // Capture time AFTER acquiring locks so every last_seen <= now.
-                    let now = Instant::now();
+                let now = Instant::now();
+                let activity = detector.activity.lock().unwrap();
+                let mut idle_set = detector.idle_set.lock().unwrap();
 
-                    let mut result = Vec::new();
-                    for (&session_id, &last_seen) in activity.iter() {
-                        if now.duration_since(last_seen) > IDLE_THRESHOLD
-                            && !idle_set.contains(&session_id)
-                        {
-                            idle_set.insert(session_id);
-                            log::info!(
-                                "[idle] IDLE {} ({}ms since last activity)",
-                                &session_id.to_string()[..8],
-                                now.duration_since(last_seen).as_millis()
-                            );
-                            result.push(session_id);
-                        }
+                for (&session_id, &last_seen) in activity.iter() {
+                    // Use checked_duration_since to avoid panic when a PTY
+                    // thread updates last_seen between Instant::now() and
+                    // the lock acquisition (last_seen > now).
+                    let elapsed = match now.checked_duration_since(last_seen) {
+                        Some(d) => d,
+                        None => continue, // last_seen is in the future — skip
+                    };
+                    if elapsed > IDLE_THRESHOLD
+                        && !idle_set.contains(&session_id)
+                    {
+                        idle_set.insert(session_id);
+                        log::info!(
+                            "[idle] IDLE {} ({}ms since last activity)",
+                            &session_id.to_string()[..8],
+                            elapsed.as_millis()
+                        );
+                        // Callback inside lock scope preserves delivery order:
+                        // on_idle always fires before any on_busy for new activity.
+                        (detector.on_idle)(session_id);
                     }
-                    result
-                }; // locks released here
-
-                for session_id in newly_idle {
-                    (detector.on_idle)(session_id);
                 }
             }
         });
