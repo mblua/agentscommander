@@ -40,6 +40,7 @@ const SidebarApp: Component = () => {
   let cleanupGeometry: (() => void) | null = null;
   let raiseTerminalEnabled = true;
   let lastRaiseTime = 0;
+  const blockContextMenu = (e: Event) => e.preventDefault();
 
   const handleRaiseTerminal = async (e: MouseEvent) => {
     if (!isTauri || !raiseTerminalEnabled) return;
@@ -74,6 +75,9 @@ const SidebarApp: Component = () => {
       await getCurrentWindow().setAlwaysOnTop(true);
     }
     document.addEventListener("mousedown", handleRaiseTerminal);
+
+    // Block the default browser context menu globally — custom menus are used instead
+    document.addEventListener("contextmenu", blockContextMenu);
 
     // Always apply Sidebar Right layout on startup
     try {
@@ -187,6 +191,7 @@ const SidebarApp: Component = () => {
     if (cleanupZoom) cleanupZoom();
     if (cleanupGeometry) cleanupGeometry();
     document.removeEventListener("mousedown", handleRaiseTerminal);
+    document.removeEventListener("contextmenu", blockContextMenu);
   });
 
   return (
