@@ -8,7 +8,7 @@ import type { AgentPreset } from "../../shared/agent-presets";
 const CUSTOM_PRESET: AgentPreset = {
   key: "custom",
   label: "Custom Agent",
-  description: "Configure your own agent command",
+  description: "Configure your own Coding Agent",
   color: "#6366f1",
   config: {
     label: "",
@@ -142,12 +142,12 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
                 <strong>{addedLabel()}</strong> configured!
               </div>
               <div class="onboarding-done-hint">
-                You can add more agents later in Settings.
+                You can add more Coding Agents later in Settings.
               </div>
             </div>
           }>
             <p class="onboarding-welcome">
-              Welcome to AgentsCommander! Let's set up your first AI coding agent.
+              Welcome to AgentsCommander! Let's set up your first Coding Agent.
             </p>
 
             <div class="onboarding-cards">
