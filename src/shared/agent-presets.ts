@@ -12,11 +12,11 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     key: "claude",
     label: "Claude Code",
-    description: "AI coding agent by Anthropic",
+    description: "Coding Agent by Anthropic",
     color: "#d97706",
     config: {
       label: "Claude Code",
-      command: "claude --enable-auto-mode",
+      command: "claude",
       color: "#d97706",
       gitPullBefore: false,
       excludeGlobalClaudeMd: true,
@@ -25,7 +25,7 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     key: "codex",
     label: "Codex",
-    description: "AI coding agent by OpenAI",
+    description: "Coding Agent by OpenAI",
     color: "#10b981",
     config: {
       label: "Codex",
@@ -38,11 +38,11 @@ export const AGENT_PRESETS: AgentPreset[] = [
   {
     key: "gemini",
     label: "Gemini CLI",
-    description: "AI coding agent by Google",
+    description: "Coding Agent by Google",
     color: "#4285f4",
     config: {
       label: "Gemini CLI",
-      command: "gemini --approval-mode=yolo -m gemini-3-pro-preview",
+      command: "gemini",
       color: "#4285f4",
       gitPullBefore: false,
       excludeGlobalClaudeMd: false,
