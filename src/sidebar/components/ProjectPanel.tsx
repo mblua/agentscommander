@@ -453,25 +453,24 @@ const ProjectPanel: Component = () => {
                 {(() => {
                   const [wgsCollapsed, setWgsCollapsed] = createSignal(false);
                   return (
+                    <Show when={sessionsStore.showCategories}>
                     <div class="ac-wg-group">
-                      <Show when={sessionsStore.showCategories}>
-                        <div
-                          class="ac-wg-header ac-wg-header--collapsible"
-                          onClick={() => setWgsCollapsed((c) => !c)}
-                        >
-                          <span class="ac-discovery-chevron" classList={{ collapsed: wgsCollapsed() }}>
-                            &#x25BE;
-                          </span>
-                          <div class="ac-wg-header-text">
-                            <span class="ac-wg-name">Workgroups</span>
-                          </div>
-                          <span class="ac-team-count">{proj.workgroups.length}</span>
+                      <div
+                        class="ac-wg-header ac-wg-header--collapsible"
+                        onClick={() => setWgsCollapsed((c) => !c)}
+                      >
+                        <span class="ac-discovery-chevron" classList={{ collapsed: wgsCollapsed() }}>
+                          &#x25BE;
+                        </span>
+                        <div class="ac-wg-header-text">
+                          <span class="ac-wg-name">Workgroups</span>
                         </div>
-                      </Show>
-                      <Show when={!sessionsStore.showCategories || !wgsCollapsed()}>
+                        <span class="ac-team-count">{proj.workgroups.length}</span>
+                      </div>
+                      <Show when={!wgsCollapsed()}>
                         <Show
                           when={proj.workgroups.length > 0}
-                          fallback={sessionsStore.showCategories ? <div class="ac-empty-hint">No workgroups</div> : null}
+                          fallback={<div class="ac-empty-hint">No workgroups</div>}
                         >
                           <For each={proj.workgroups}>
                             {(wg) => {
@@ -565,6 +564,7 @@ const ProjectPanel: Component = () => {
                         </Show>
                       </Show>
                     </div>
+                    </Show>
                   );
                 })()}
                 {/* Agents */}
@@ -617,25 +617,24 @@ const ProjectPanel: Component = () => {
 
                   return (
                     <>
+                    <Show when={sessionsStore.showCategories}>
                     <div class="ac-wg-group">
-                      <Show when={sessionsStore.showCategories}>
-                        <div
-                          class="ac-wg-header ac-wg-header--collapsible"
-                          onClick={() => setMatrixCollapsed((c) => !c)}
-                          onContextMenu={handleAgentsHeaderContextMenu}
-                        >
-                          <span class="ac-discovery-chevron" classList={{ collapsed: matrixCollapsed() }}>
-                            &#x25BE;
-                          </span>
-                          <div class="ac-wg-header-text">
-                            <span class="ac-wg-name">Agents</span>
-                          </div>
+                      <div
+                        class="ac-wg-header ac-wg-header--collapsible"
+                        onClick={() => setMatrixCollapsed((c) => !c)}
+                        onContextMenu={handleAgentsHeaderContextMenu}
+                      >
+                        <span class="ac-discovery-chevron" classList={{ collapsed: matrixCollapsed() }}>
+                          &#x25BE;
+                        </span>
+                        <div class="ac-wg-header-text">
+                          <span class="ac-wg-name">Agents</span>
                         </div>
-                      </Show>
-                      <Show when={!sessionsStore.showCategories || !matrixCollapsed()}>
+                      </div>
+                      <Show when={!matrixCollapsed()}>
                         <Show
                           when={proj.agents.length > 0}
-                          fallback={sessionsStore.showCategories ? <div class="ac-empty-hint">No agents</div> : null}
+                          fallback={<div class="ac-empty-hint">No agents</div>}
                         >
                           <For each={proj.agents}>
                             {(agent) => {
@@ -672,6 +671,7 @@ const ProjectPanel: Component = () => {
                         </Show>
                       </Show>
                     </div>
+                    </Show>
 
                     {/* Agent item context menu */}
                     {agentCtxMenu() && (
@@ -789,24 +789,23 @@ const ProjectPanel: Component = () => {
                 {(() => {
                   const [teamsCollapsed, setTeamsCollapsed] = createSignal(false);
                   return (
+                    <Show when={sessionsStore.showCategories}>
                     <div class="ac-wg-group">
-                      <Show when={sessionsStore.showCategories}>
-                        <div
-                          class="ac-wg-header ac-wg-header--collapsible"
-                          onClick={() => setTeamsCollapsed((c) => !c)}
-                        >
-                          <span class="ac-discovery-chevron" classList={{ collapsed: teamsCollapsed() }}>
-                            &#x25BE;
-                          </span>
-                          <div class="ac-wg-header-text">
-                            <span class="ac-wg-name">Teams</span>
-                          </div>
+                      <div
+                        class="ac-wg-header ac-wg-header--collapsible"
+                        onClick={() => setTeamsCollapsed((c) => !c)}
+                      >
+                        <span class="ac-discovery-chevron" classList={{ collapsed: teamsCollapsed() }}>
+                          &#x25BE;
+                        </span>
+                        <div class="ac-wg-header-text">
+                          <span class="ac-wg-name">Teams</span>
                         </div>
-                      </Show>
-                      <Show when={!sessionsStore.showCategories || !teamsCollapsed()}>
+                      </div>
+                      <Show when={!teamsCollapsed()}>
                         <Show
                           when={proj.teams.length > 0}
-                          fallback={sessionsStore.showCategories ? <div class="ac-empty-hint">No teams</div> : null}
+                          fallback={<div class="ac-empty-hint">No teams</div>}
                         >
                           <For each={proj.teams}>
                             {(team) => {
@@ -853,6 +852,7 @@ const ProjectPanel: Component = () => {
                         </Show>
                       </Show>
                     </div>
+                    </Show>
                   );
                 })()}
               </div>

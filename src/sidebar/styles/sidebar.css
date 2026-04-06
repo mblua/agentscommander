@@ -2784,7 +2784,7 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-wg-group:last-child {
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(100, 150, 220, 0.6);
+  color: rgba(140, 180, 240, 0.85);
 }
 
 [data-sidebar-style="deep-space"] .ac-wg-header--collapsible {
@@ -2796,6 +2796,22 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-wg-group:last-child {
   border-radius: 4px;
   margin: 1px 4px;
   transition: background 200ms, box-shadow 200ms;
+}
+
+[data-sidebar-style="deep-space"] .ac-discovery-item {
+  color: rgba(200, 215, 240, 0.9);
+}
+
+[data-sidebar-style="deep-space"] .ac-discovery-item-name {
+  color: rgba(200, 220, 255, 0.92);
+}
+
+[data-sidebar-style="deep-space"] .session-item-name {
+  color: rgba(200, 220, 255, 0.92);
+}
+
+[data-sidebar-style="deep-space"] .ac-discovery-badge {
+  opacity: 0.95;
 }
 
 [data-sidebar-style="deep-space"] .ac-discovery-item:hover {
@@ -2882,9 +2898,9 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-discovery-item:has(.ac-dis
   color: rgba(140, 80, 0, 0.9);
 }
 
-/* Non-coordinator agents in Deep Space — recede visually */
+/* Non-coordinator agents in Deep Space — recede slightly but remain legible */
 [data-sidebar-style="deep-space"] .ac-discovery-item:not(:has(.ac-discovery-badge.coord)) .ac-discovery-item-name {
-  opacity: 0.7;
+  opacity: 0.85;
   font-size: 11px;
 }
 
@@ -3038,6 +3054,20 @@ html.light-theme[data-sidebar-style="arctic-ops"] .session-item.active {
   box-shadow: 0 0 6px rgba(100, 180, 255, 0.5);
 }
 
+[data-sidebar-style="arctic-ops"] .coord-quick-access {
+  display: block;
+  margin: 4px 6px 2px;
+  padding: 4px 0;
+  background: rgba(180, 210, 240, 0.08);
+  border: 1px solid rgba(160, 200, 255, 0.15);
+  border-radius: 6px;
+}
+
+html.light-theme[data-sidebar-style="arctic-ops"] .coord-quick-access {
+  background: rgba(100, 160, 220, 0.08);
+  border-color: rgba(100, 160, 220, 0.2);
+}
+
 /* =============================================================================
    SIDEBAR STYLE: Obsidian Mesh
    Submarine control room — volcanic dark with amber warnings, crosshatch
@@ -3127,7 +3157,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
   font-weight: 800;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: rgba(220, 160, 40, 0.5);
+  color: rgba(220, 170, 60, 0.8);
 }
 
 [data-sidebar-style="obsidian-mesh"] .ac-wg-header--collapsible {
@@ -3148,6 +3178,11 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
 [data-sidebar-style="obsidian-mesh"] .ac-discovery-item-name {
   font-size: 11px;
   font-weight: 600;
+  color: rgba(230, 210, 170, 0.92);
+}
+
+[data-sidebar-style="obsidian-mesh"] .session-item-name {
+  color: rgba(230, 210, 170, 0.92);
 }
 
 [data-sidebar-style="obsidian-mesh"] .ac-discovery-badge.coord {
@@ -3158,8 +3193,8 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-wg-group {
 }
 
 [data-sidebar-style="obsidian-mesh"] .ac-discovery-badge.team {
-  background: rgba(220, 160, 40, 0.1);
-  color: rgba(220, 160, 40, 0.7);
+  background: rgba(220, 160, 40, 0.15);
+  color: rgba(230, 175, 50, 0.9);
 }
 
 [data-sidebar-style="obsidian-mesh"] .project-content .session-item {
@@ -3216,7 +3251,7 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-discovery-item:has(.ac-
 /* Worker agents — minimized, receded */
 [data-sidebar-style="obsidian-mesh"] .ac-discovery-item:not(:has(.ac-discovery-badge.coord)) {
   padding: 2px 8px 2px 14px;
-  opacity: 0.55;
+  opacity: 0.75;
   transition: opacity 150ms, background 150ms;
 }
 
@@ -3239,8 +3274,8 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-discovery-item:has(.ac-
 
 /* Worker status dots — smaller */
 [data-sidebar-style="obsidian-mesh"] .ac-discovery-item:not(:has(.ac-discovery-badge.coord)) > .session-item-status {
-  width: 5px;
-  height: 5px;
+  width: 6px;
+  height: 6px;
 }
 
 /* Compact workgroup headers */
