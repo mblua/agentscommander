@@ -142,27 +142,56 @@ pub fn set_last_coding_agent(
     Ok(())
 }
 
-/// Read-modify-write a single config.json: upsert lastCodingAgent + codingAgents entry.
+/// Ensure a key in a JSON map is an object, inserting `{}` if missing or resetting if corrupted.
+fn ensure_object<'a>(
+    map: &'a mut serde_json::Map<String, serde_json::Value>,
+    key: &str,
+    context: &Path,
+) -> &'a mut serde_json::Map<String, serde_json::Value> {
+    let val = map.entry(key).or_insert_with(|| serde_json::json!({}));
+    if !val.is_object() {
+        log::warn!("upsert_config: '{}' was not an object at {:?}, resetting", key, context);
+        *val = serde_json::json!({});
+    }
+    val.as_object_mut().expect("just set to object")
+}
+
+/// Read-modify-write a single config.json: upsert tooling fields while preserving all others.
+/// Uses serde_json::Value to avoid dropping unknown top-level fields (e.g. `identity`, `repos`)
+/// that aren't part of the AgentLocalConfig struct.
 fn upsert_config(
     config_path: &Path,
     agent_id: &str,
     entry: &CodingAgentEntry,
 ) -> Result<(), String> {
-    let mut config: AgentLocalConfig = if config_path.exists() {
+    let mut root: serde_json::Value = if config_path.exists() {
         let content = std::fs::read_to_string(config_path)
             .map_err(|e| format!("Failed to read config: {}", e))?;
-        serde_json::from_str(&content).unwrap_or_else(|e| {
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap_or_else(|e| {
             log::warn!("Failed to parse config at {:?}, starting fresh: {}", config_path, e);
-            AgentLocalConfig::default()
-        })
+            serde_json::json!({})
+        });
+        if !parsed.is_object() {
+            log::warn!("upsert_config: root at {:?} is not an object, starting fresh", config_path);
+            serde_json::json!({})
+        } else {
+            parsed
+        }
     } else {
-        AgentLocalConfig::default()
+        serde_json::json!({})
     };
 
-    config.tooling.last_coding_agent = Some(agent_id.to_string());
-    config.tooling.coding_agents.insert(agent_id.to_string(), entry.clone());
+    let obj = root.as_object_mut().expect("guaranteed object above");
 
-    let json = serde_json::to_string_pretty(&config)
+    let tooling = ensure_object(obj, "tooling", config_path);
+    tooling.insert("lastCodingAgent".to_string(), serde_json::json!(agent_id));
+
+    let coding_agents = ensure_object(tooling, "codingAgents", config_path);
+    let entry_val = serde_json::to_value(entry)
+        .map_err(|e| format!("Failed to serialize entry: {}", e))?;
+    coding_agents.insert(agent_id.to_string(), entry_val);
+
+    let json = serde_json::to_string_pretty(&root)
         .map_err(|e| format!("Failed to serialize config: {}", e))?;
     std::fs::write(config_path, json)
         .map_err(|e| format!("Failed to write config: {}", e))?;
