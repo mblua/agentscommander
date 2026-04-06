@@ -1,4 +1,4 @@
-import { Component, For, Show, createSignal, onMount, onCleanup } from "solid-js";
+import { Component, For, Show, createMemo, createSignal, onMount, onCleanup } from "solid-js";
 import { Portal } from "solid-js/web";
 import type { AcWorkgroup, AcAgentReplica, AcTeam, Session } from "../../shared/types";
 import { SessionAPI, WindowAPI, EntityAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
@@ -53,6 +53,18 @@ function replicaDotClass(wg: AcWorkgroup, replica: AcAgentReplica): string {
   if (session.waitingForInput) return "waiting";
   if (typeof session.status === "string") return session.status;
   return "exited";
+}
+
+/** Check if a session has a live PTY process (not exited, not offline) */
+function isSessionLive(session: Session | undefined): boolean {
+  if (!session) return false;
+  if (typeof session.status === "object" && "exited" in session.status) return false;
+  return true;
+}
+
+/** Get replicas in a workgroup that have active (live) sessions */
+function getActiveReplicasForWg(wg: AcWorkgroup): AcAgentReplica[] {
+  return (wg.agents ?? []).filter(replica => isSessionLive(replicaSession(wg, replica)));
 }
 
 const ProjectPanel: Component = () => {
@@ -188,6 +200,10 @@ const ProjectPanel: Component = () => {
           setWgDeleteInProgress(false);
           setDeletingWg(null);
         };
+        const activeReplicas = createMemo(() => {
+          const wg = deletingWg();
+          return wg ? getActiveReplicasForWg(wg) : [];
+        });
 
         let dismissCtx: (() => void) | null = null;
 
@@ -684,6 +700,25 @@ const ProjectPanel: Component = () => {
                       <p style={{ margin: "0", "line-height": "1.5", opacity: 0.85 }}>
                         Delete workgroup <strong>{deletingWg()!.name}</strong>? This will remove the workgroup directory and all its contents. This action cannot be undone.
                       </p>
+                      <Show when={activeReplicas().length > 0}>
+                        <div style={{
+                          "background": "var(--danger, #c0392b)",
+                          "color": "#fff",
+                          "padding": "10px 12px",
+                          "border-radius": "6px",
+                          "margin-top": "10px",
+                          "font-size": "12px",
+                          "line-height": "1.5",
+                        }}>
+                          <strong>Cannot delete:</strong> the following sessions are still active:
+                          <ul style={{ margin: "6px 0 6px 16px", padding: "0" }}>
+                            <For each={activeReplicas()}>
+                              {(replica) => <li>{replica.name}</li>}
+                            </For>
+                          </ul>
+                          Close all active sessions first by hovering over each session and clicking the <strong>✕</strong> button.
+                        </div>
+                      </Show>
                       <Show when={wgDeleteError()}>
                         <div class="new-agent-error">{wgDeleteError()}</div>
                       </Show>
@@ -711,9 +746,10 @@ const ProjectPanel: Component = () => {
                       <button
                         class="new-agent-create-btn"
                         style={{ "background": "var(--danger, #c0392b)" }}
-                        disabled={wgDeleteInProgress() || (wgDirtyRepos() && wgConfirmText() !== deletingWg()!.name)}
+                        disabled={wgDeleteInProgress() || activeReplicas().length > 0 || (wgDirtyRepos() && wgConfirmText() !== deletingWg()!.name)}
                         onClick={async () => {
                           if (wgDeleteInProgress()) return;
+                          if (activeReplicas().length > 0) return;
                           setWgDeleteInProgress(true);
                           const wg = deletingWg()!;
                           const forceDelete = wgDirtyRepos();
