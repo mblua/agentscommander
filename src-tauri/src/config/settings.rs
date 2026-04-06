@@ -101,6 +101,9 @@ pub struct AppSettings {
     /// Root token that bypasses all routing checks in the send command
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub root_token: Option<String>,
+    /// Whether the user has dismissed the first-run onboarding wizard
+    #[serde(default)]
+    pub onboarding_dismissed: bool,
 }
 
 fn default_true() -> bool {
@@ -173,6 +176,7 @@ impl Default for AppSettings {
             project_paths: vec![],
             sidebar_style: default_sidebar_style(),
             root_token: None,
+            onboarding_dismissed: false,
         }
     }
 }

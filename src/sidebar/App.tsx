@@ -83,9 +83,11 @@ const SidebarApp: Component = () => {
     // Load settings into reactive store (for voice-to-text visibility etc.)
     await settingsStore.load();
 
-    // First-run: show onboarding if no coding agents configured
-    const loaded = settingsStore.current;
-    if (!loaded?.agents || loaded.agents.length === 0) {
+    // First-run: show onboarding if no coding agents configured and not previously dismissed
+    if (
+      (!appSettings.agents || appSettings.agents.length === 0) &&
+      !appSettings.onboardingDismissed
+    ) {
       setShowOnboarding(true);
     }
 

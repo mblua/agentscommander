@@ -10,6 +10,7 @@ import type {
 import { SettingsAPI, TelegramAPI, ReposAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
 import { sessionsStore } from "../stores/sessions";
+import { AGENT_PRESET_MAP, newAgentId } from "../../shared/agent-presets";
 
 const GEMINI_MODELS = [
   { id: "gemini-2.5-flash", label: "Gemini 2.5 Flash (recommended)" },
@@ -19,34 +20,6 @@ const GEMINI_MODELS = [
   { id: "gemini-1.5-pro", label: "Gemini 1.5 Pro" },
 ];
 
-const AGENT_PRESETS: Record<string, Omit<AgentConfig, "id">> = {
-  claude: {
-    label: "Claude Code",
-    command: "claude --enable-auto-mode",
-    color: "#d97706",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: true,
-  },
-  codex: {
-    label: "Codex",
-    command: "codex",
-    color: "#10b981",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: false,
-  },
-  gemini: {
-    label: "Gemini CLI",
-    command: "gemini --approval-mode=yolo -m gemini-3-pro-preview",
-    color: "#4285f4",
-    gitPullBefore: false,
-    excludeGlobalClaudeMd: false,
-  },
-};
-
-let idCounter = 0;
-function newId(): string {
-  return `agent_${Date.now()}_${idCounter++}`;
-}
 
 type SettingsTab = "general" | "agents" | "integrations";
 
@@ -119,9 +92,9 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
   const addAgent = (preset?: Omit<AgentConfig, "id">) => {
     if (!settings.data) return;
     const agent: AgentConfig = preset
-      ? { id: newId(), ...preset }
+      ? { id: newAgentId(), ...preset }
       : {
-          id: newId(),
+          id: newAgentId(),
           label: "",
           command: "",
           color: "#6366f1",
@@ -149,7 +122,7 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
   const addBot = () => {
     if (!settings.data) return;
     const bot: TelegramBotConfig = {
-      id: newId(),
+      id: newAgentId(),
       label: "",
       token: "",
       chatId: 0,
@@ -473,11 +446,11 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
         <Show when={!hasAgentByCommand("claude")}>
           <button
             class="settings-preset-btn"
-            onClick={() => addAgent(AGENT_PRESETS.claude)}
+            onClick={() => addAgent(AGENT_PRESET_MAP.claude)}
           >
             <span
               class="settings-color-dot"
-              style={{ background: AGENT_PRESETS.claude.color }}
+              style={{ background: AGENT_PRESET_MAP.claude.color }}
             />
             + Claude Code
           </button>
@@ -485,11 +458,11 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
         <Show when={!hasAgentByCommand("codex")}>
           <button
             class="settings-preset-btn"
-            onClick={() => addAgent(AGENT_PRESETS.codex)}
+            onClick={() => addAgent(AGENT_PRESET_MAP.codex)}
           >
             <span
               class="settings-color-dot"
-              style={{ background: AGENT_PRESETS.codex.color }}
+              style={{ background: AGENT_PRESET_MAP.codex.color }}
             />
             + Codex
           </button>
@@ -497,11 +470,11 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
         <Show when={!hasAgentByCommand("gemini")}>
           <button
             class="settings-preset-btn"
-            onClick={() => addAgent(AGENT_PRESETS.gemini)}
+            onClick={() => addAgent(AGENT_PRESET_MAP.gemini)}
           >
             <span
               class="settings-color-dot"
-              style={{ background: AGENT_PRESETS.gemini.color }}
+              style={{ background: AGENT_PRESET_MAP.gemini.color }}
             />
             + Gemini CLI
           </button>

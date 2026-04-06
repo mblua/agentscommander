@@ -136,6 +136,7 @@ export interface AppSettings {
   projectPath: string | null;
   projectPaths: string[];
   sidebarStyle: string;
+  onboardingDismissed: boolean;
 }
 
 // Team grouping for sidebar

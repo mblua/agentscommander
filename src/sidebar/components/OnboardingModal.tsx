@@ -2,79 +2,39 @@ import { Component, createSignal, onMount, Show } from "solid-js";
 import type { AgentConfig, AppSettings } from "../../shared/types";
 import { SettingsAPI } from "../../shared/ipc";
 import { settingsStore } from "../../shared/stores/settings";
+import { AGENT_PRESETS, newAgentId } from "../../shared/agent-presets";
+import type { AgentPreset } from "../../shared/agent-presets";
 
-/* ── Agent presets (mirrored from SettingsModal) ── */
-const AGENT_PRESETS: {
-  key: string;
-  label: string;
-  description: string;
-  color: string;
-  config: Omit<AgentConfig, "id">;
-}[] = [
-  {
-    key: "claude",
-    label: "Claude Code",
-    description: "AI coding agent by Anthropic",
-    color: "#d97706",
-    config: {
-      label: "Claude Code",
-      command: "claude --enable-auto-mode",
-      color: "#d97706",
-      gitPullBefore: false,
-      excludeGlobalClaudeMd: true,
-    },
-  },
-  {
-    key: "codex",
-    label: "Codex",
-    description: "AI coding agent by OpenAI",
-    color: "#10b981",
-    config: {
-      label: "Codex",
-      command: "codex",
-      color: "#10b981",
-      gitPullBefore: false,
-      excludeGlobalClaudeMd: false,
-    },
-  },
-  {
-    key: "gemini",
-    label: "Gemini CLI",
-    description: "AI coding agent by Google",
-    color: "#4285f4",
-    config: {
-      label: "Gemini CLI",
-      command: "gemini --approval-mode=yolo -m gemini-3-pro-preview",
-      color: "#4285f4",
-      gitPullBefore: false,
-      excludeGlobalClaudeMd: false,
-    },
-  },
-  {
-    key: "custom",
-    label: "Custom Agent",
-    description: "Configure your own agent command",
+const CUSTOM_PRESET: AgentPreset = {
+  key: "custom",
+  label: "Custom Agent",
+  description: "Configure your own agent command",
+  color: "#6366f1",
+  config: {
+    label: "",
+    command: "",
     color: "#6366f1",
-    config: {
-      label: "",
-      command: "",
-      color: "#6366f1",
-      gitPullBefore: false,
-      excludeGlobalClaudeMd: true,
-    },
+    gitPullBefore: false,
+    excludeGlobalClaudeMd: true,
   },
-];
+};
 
-let idCounter = 0;
-function newId(): string {
-  return `agent_${Date.now()}_${idCounter++}`;
-}
+const ALL_PRESETS = [...AGENT_PRESETS, CUSTOM_PRESET];
 
 const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
   const [selectedPreset, setSelectedPreset] = createSignal<string | null>(null);
   const [saving, setSaving] = createSignal(false);
   const [done, setDone] = createSignal(false);
   const [addedLabel, setAddedLabel] = createSignal("");
+
+  const dismissAndClose = async () => {
+    try {
+      const settings = await SettingsAPI.get();
+      await SettingsAPI.update({ ...settings, onboardingDismissed: true });
+      settingsStore.refresh();
+    } catch {}
+    props.onClose();
+  };
 
   // Custom agent fields
   const [customLabel, setCustomLabel] = createSignal("");
@@ -95,7 +55,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
     const key = selectedPreset();
     if (!key) return;
 
-    const preset = AGENT_PRESETS.find((p) => p.key === key);
+    const preset = ALL_PRESETS.find((p) => p.key === key);
     if (!preset) return;
 
     setSaving(true);
@@ -105,7 +65,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
       let agent: AgentConfig;
       if (key === "custom") {
         agent = {
-          id: newId(),
+          id: newAgentId(),
           label: customLabel().trim(),
           command: customCommand().trim(),
           color: preset.config.color,
@@ -113,7 +73,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
           excludeGlobalClaudeMd: true,
         };
       } else {
-        agent = { id: newId(), ...preset.config };
+        agent = { id: newAgentId(), ...preset.config };
       }
 
       const updated: AppSettings = {
@@ -133,19 +93,43 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
   };
 
   const handleKeyDown = (e: KeyboardEvent) => {
-    if (e.key === "Escape") props.onClose();
+    if (e.key === "Escape") {
+      if (done()) props.onClose();
+      else void dismissAndClose();
+      return;
+    }
+    // Focus trap: keep Tab cycling within the modal
+    if (e.key === "Tab" && modalRef) {
+      const focusable = modalRef.querySelectorAll<HTMLElement>(
+        'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])'
+      );
+      if (focusable.length === 0) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
   };
 
   const handleOverlayClick = (e: MouseEvent) => {
-    if ((e.target as HTMLElement).classList.contains("modal-overlay")) props.onClose();
+    if ((e.target as HTMLElement).classList.contains("modal-overlay")) {
+      if (done()) props.onClose();
+      else void dismissAndClose();
+    }
   };
 
   let overlayRef!: HTMLDivElement;
+  let modalRef!: HTMLDivElement;
   onMount(() => overlayRef.focus());
 
   return (
     <div class="modal-overlay" ref={overlayRef} onClick={handleOverlayClick} onKeyDown={handleKeyDown} tabIndex={0}>
-      <div class="agent-modal onboarding-modal">
+      <div class="agent-modal onboarding-modal" ref={modalRef}>
         <div class="agent-modal-header">
           <span class="agent-modal-title">Welcome</span>
         </div>
@@ -167,7 +151,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
             </p>
 
             <div class="onboarding-cards">
-              {AGENT_PRESETS.map((preset) => (
+              {ALL_PRESETS.map((preset) => (
                 <button
                   class={`onboarding-card ${selectedPreset() === preset.key ? "selected" : ""}`}
                   onClick={() => handleSelect(preset.key)}
@@ -217,7 +201,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
         <div class="new-agent-footer">
           <Show when={done()} fallback={
             <>
-              <button class="new-agent-cancel-btn" onClick={props.onClose}>
+              <button class="new-agent-cancel-btn" onClick={() => void dismissAndClose()}>
                 Skip
               </button>
               <button
