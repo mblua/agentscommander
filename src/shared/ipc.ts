@@ -52,6 +52,9 @@ export const SessionAPI = {
 
   setLastPrompt: (id: string, text: string) =>
     transport.invoke<void>("set_last_prompt", { id, text }),
+
+  createRootAgent: () =>
+    transport.invoke<Session>("create_root_agent_session"),
 };
 
 export const PtyAPI = {

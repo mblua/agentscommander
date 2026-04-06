@@ -28,6 +28,7 @@ import { projectStore } from "./stores/project";
 import { settingsStore } from "../shared/stores/settings";
 import Titlebar from "./components/Titlebar";
 import ActionBar from "./components/ActionBar";
+import RootAgentBanner from "./components/RootAgentBanner";
 import ProjectPanel from "./components/ProjectPanel";
 import OnboardingModal from "./components/OnboardingModal";
 import "./styles/sidebar.css";
@@ -199,6 +200,7 @@ const SidebarApp: Component = () => {
       <div class="sidebar-layout">
         <Titlebar />
         <ActionBar />
+        <RootAgentBanner />
         <div class="sidebar-scrollable">
           <ProjectPanel />
         </div>

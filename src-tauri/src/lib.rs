@@ -570,6 +570,7 @@ pub fn run() {
             commands::session::set_last_prompt,
             commands::session::list_sessions,
             commands::session::get_active_session,
+            commands::session::create_root_agent_session,
             commands::pty::pty_write,
             commands::pty::pty_resize,
             commands::config::get_settings,

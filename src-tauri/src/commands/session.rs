@@ -514,3 +514,161 @@ pub async fn get_active_session(
     let mgr = session_mgr.read().await;
     Ok(mgr.get_active().await.map(|id| id.to_string()))
 }
+
+/// Create or reuse a root agent session.
+/// Derives the root agent path from the current binary name:
+///   C:\Users\maria\0_mmb\0_AC\.{binary_name}\ac-root-agent
+/// If a session already exists at that path, switches to it instead.
+/// Uses the first configured coding agent from settings.
+/// Injects session credentials immediately after creation.
+#[tauri::command]
+pub async fn create_root_agent_session(
+    app: AppHandle,
+    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    tg_mgr: State<'_, TelegramBridgeState>,
+    settings: State<'_, SettingsState>,
+) -> Result<SessionInfo, String> {
+    // Derive root agent path from binary name
+    let exe_path = std::env::current_exe()
+        .map_err(|e| format!("Failed to get current exe path: {}", e))?;
+    let binary_name = exe_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .ok_or("Failed to extract binary name")?
+        .to_string();
+
+    let root_agent_path = format!(
+        r"C:\Users\maria\0_mmb\0_AC\.{}\ac-root-agent",
+        binary_name
+    );
+
+    // Check if a session already exists at this path — reuse it
+    {
+        let mgr = session_mgr.read().await;
+        let sessions = mgr.list_sessions().await;
+        if let Some(existing) = sessions.iter().find(|s| s.working_directory == root_agent_path) {
+            log::info!("[root-agent] Reusing existing session {} at {}", existing.id, root_agent_path);
+            return Ok(existing.clone());
+        }
+    }
+
+    // Create directory if it doesn't exist
+    std::fs::create_dir_all(&root_agent_path)
+        .map_err(|e| format!("Failed to create root agent directory: {}", e))?;
+
+    // Get the first configured agent from settings
+    let cfg = settings.read().await;
+    let (agent_id, shell, shell_args, agent_label) = if let Some(agent) = cfg.agents.first() {
+        let parts: Vec<String> = agent.command.split_whitespace().map(|s| s.to_string()).collect();
+        if let Some((cmd, args)) = parts.split_first() {
+            (Some(agent.id.clone()), cmd.clone(), args.to_vec(), Some(agent.label.clone()))
+        } else {
+            (None, cfg.default_shell.clone(), cfg.default_shell_args.clone(), None)
+        }
+    } else {
+        (None, cfg.default_shell.clone(), cfg.default_shell_args.clone(), None)
+    };
+    drop(cfg);
+
+    let info = create_session_inner(
+        &app,
+        session_mgr.inner(),
+        pty_mgr.inner(),
+        shell,
+        shell_args,
+        root_agent_path.clone(),
+        Some("Root Agent".to_string()),
+        agent_id,
+        agent_label,
+        false,
+        false,
+        None,
+        None,
+    )
+    .await?;
+
+    // Persist after creation
+    {
+        let mgr = session_mgr.read().await;
+        persist_current_state(&mgr).await;
+    }
+
+    // Auto-attach Telegram bot if configured
+    let id = Uuid::parse_str(&info.id).map_err(|e| format!("Invalid session UUID: {}", e))?;
+    let config_path = std::path::Path::new(&root_agent_path)
+        .join(crate::config::agent_local_dir_name())
+        .join("config.json");
+    if let Ok(contents) = tokio::fs::read_to_string(&config_path).await {
+        if let Ok(local_config) = serde_json::from_str::<AgentLocalConfig>(&contents) {
+            if let Some(bot_label) = local_config.tooling.telegram_bot {
+                let cfg = settings.read().await;
+                let bot = cfg.telegram_bots.iter().find(|b| b.label == bot_label).cloned();
+                drop(cfg);
+                if let Some(bot) = bot {
+                    let pty_arc = pty_mgr.inner().clone();
+                    let mut tg = tg_mgr.lock().await;
+                    if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone()) {
+                        let _ = app.emit("telegram_bridge_attached", bridge_info);
+                    }
+                }
+            }
+        }
+    }
+
+    // Inject credentials immediately so the root agent has its token right away.
+    // Extract needed data before spawning to avoid holding locks across awaits.
+    let token = info.token.clone();
+    let cwd = info.working_directory.clone();
+    let app_clone = app.clone();
+    let session_id = id;
+    tokio::spawn(async move {
+        // Small delay to let the PTY initialize
+        tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+
+        let exe = std::env::current_exe().ok();
+        let bin_name = exe.as_ref()
+            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
+            .unwrap_or_else(|| "agentscommander".to_string());
+        let bin_path = {
+            let raw = exe.as_ref()
+                .map(|p| p.to_string_lossy().to_string())
+                .unwrap_or_else(|| "agentscommander.exe".to_string());
+            raw.strip_prefix(r"\\?\").unwrap_or(&raw).to_string()
+        };
+        let local_dir = format!(".{}", &bin_name);
+
+        let cred_block = format!(
+            concat!(
+                "\n",
+                "# === Session Credentials ===\n",
+                "# Token: {token}\n",
+                "# Root: {root}\n",
+                "# Binary: {binary}\n",
+                "# BinaryPath: {binary_path}\n",
+                "# LocalDir: {local_dir}\n",
+                "# === End Credentials ===\n",
+            ),
+            token = token,
+            root = cwd,
+            binary = bin_name,
+            binary_path = bin_path,
+            local_dir = local_dir,
+        );
+
+        if let Err(e) = crate::pty::inject::inject_text_into_session(
+            &app_clone,
+            session_id,
+            &cred_block,
+            true,
+            crate::pty::transcript::InjectReason::TokenRefresh,
+            None,
+        ).await {
+            log::warn!("[root-agent] Failed to inject credentials: {}", e);
+        } else {
+            log::info!("[root-agent] Credentials injected for root agent session {}", session_id);
+        }
+    });
+
+    Ok(info)
+}

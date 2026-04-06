@@ -709,6 +709,83 @@ html, body, #root {
   flex-shrink: 0;
 }
 
+/* Root Agent Banner */
+.root-agent-banner {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: 6px var(--spacing-sm);
+  background: rgba(0, 212, 255, 0.04);
+  border: none;
+  border-bottom: 1px solid var(--sidebar-border);
+  cursor: pointer;
+  flex-shrink: 0;
+  width: 100%;
+  text-align: left;
+  font-family: var(--font-ui);
+  transition: background var(--transition-fast);
+}
+
+.root-agent-banner:hover {
+  background: rgba(0, 212, 255, 0.08);
+}
+
+.root-agent-banner:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.root-agent-avatar {
+  width: 32px;
+  height: 32px;
+  min-width: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 212, 255, 0.1);
+  border: 1px solid rgba(0, 212, 255, 0.2);
+  border-radius: var(--radius-sm);
+  color: var(--sidebar-accent);
+}
+
+.root-agent-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+
+.root-agent-title {
+  font-size: var(--font-size-sm);
+  font-weight: 700;
+  color: var(--sidebar-fg);
+  letter-spacing: 0.3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.root-agent-subtitle {
+  font-size: 9px;
+  color: var(--sidebar-fg-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-weight: 600;
+}
+
+html.light-theme .root-agent-banner {
+  background: rgba(0, 102, 204, 0.04);
+}
+
+html.light-theme .root-agent-banner:hover {
+  background: rgba(0, 102, 204, 0.08);
+}
+
+html.light-theme .root-agent-avatar {
+  background: rgba(0, 102, 204, 0.08);
+  border-color: rgba(0, 102, 204, 0.15);
+}
+
 /* Settings Modal */
 .modal-overlay {
   position: fixed;
@@ -2559,6 +2636,10 @@ html, body, #root {
   padding: 4px 0;
 }
 
+[data-sidebar-style="noir-minimal"] .root-agent-banner {
+  border-left: 3px solid var(--sidebar-accent);
+}
+
 /* =============================================================================
    SIDEBAR STYLE: Card Sections
    - Boxed groups with surface elevation and rounded containers
@@ -2636,6 +2717,19 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup {
   margin: 1px 0;
 }
 
+[data-sidebar-style="card-sections"] .root-agent-banner {
+  margin: 4px 8px;
+  border-radius: var(--radius-md);
+  border-bottom: none;
+  background: rgba(0, 212, 255, 0.03);
+  border: 1px solid var(--sidebar-border);
+}
+
+[data-sidebar-style="card-sections"] .root-agent-banner:hover {
+  background: rgba(0, 212, 255, 0.06);
+  border-color: rgba(0, 212, 255, 0.15);
+}
+
 /* =============================================================================
    SIDEBAR STYLE: Command Center
    - Dense, status-forward with colored left strips
@@ -2697,6 +2791,18 @@ html.light-theme[data-sidebar-style="card-sections"] .ac-wg-subgroup {
 
 [data-sidebar-style="command-center"] .ac-wg-header--collapsible {
   padding: 3px var(--spacing-md) 3px 0;
+}
+
+[data-sidebar-style="command-center"] .root-agent-banner {
+  border-left: 4px solid var(--sidebar-accent);
+  padding: 4px var(--spacing-sm);
+}
+
+[data-sidebar-style="command-center"] .root-agent-avatar {
+  width: 28px;
+  height: 28px;
+  min-width: 28px;
+  border-radius: 2px;
 }
 
 /* =============================================================================
@@ -2917,6 +3023,29 @@ html.light-theme[data-sidebar-style="deep-space"] .ac-discovery-item:has(.ac-dis
   border-top: 1px solid rgba(60, 100, 180, 0.1);
 }
 
+[data-sidebar-style="deep-space"] .root-agent-banner {
+  background: linear-gradient(135deg, rgba(12, 18, 40, 0.8) 0%, rgba(20, 30, 70, 0.5) 100%);
+  border-bottom: 1px solid rgba(60, 130, 220, 0.15);
+}
+
+[data-sidebar-style="deep-space"] .root-agent-banner:hover {
+  background: linear-gradient(135deg, rgba(20, 30, 60, 0.9) 0%, rgba(30, 45, 90, 0.6) 100%);
+}
+
+[data-sidebar-style="deep-space"] .root-agent-avatar {
+  background: rgba(60, 130, 220, 0.15);
+  border-color: rgba(60, 150, 255, 0.25);
+  color: rgba(100, 180, 255, 0.9);
+}
+
+[data-sidebar-style="deep-space"] .root-agent-title {
+  color: rgba(140, 180, 240, 0.9);
+}
+
+[data-sidebar-style="deep-space"] .root-agent-subtitle {
+  color: rgba(100, 140, 200, 0.6);
+}
+
 /* =============================================================================
    SIDEBAR STYLE: Arctic Ops
    Polar research station — frosted glass panels, icy blue-white palette,
@@ -3072,6 +3201,35 @@ html.light-theme[data-sidebar-style="arctic-ops"] .session-item.active {
 html.light-theme[data-sidebar-style="arctic-ops"] .coord-quick-access {
   background: rgba(100, 160, 220, 0.08);
   border-color: rgba(100, 160, 220, 0.2);
+}
+
+[data-sidebar-style="arctic-ops"] .root-agent-banner {
+  background: rgba(160, 200, 255, 0.04);
+  backdrop-filter: blur(2px);
+  border-bottom: 1px solid rgba(160, 200, 255, 0.1);
+}
+
+[data-sidebar-style="arctic-ops"] .root-agent-banner:hover {
+  background: rgba(160, 200, 255, 0.08);
+}
+
+[data-sidebar-style="arctic-ops"] .root-agent-avatar {
+  background: rgba(160, 200, 255, 0.08);
+  border-color: rgba(160, 200, 255, 0.2);
+  color: rgba(160, 200, 255, 0.9);
+}
+
+[data-sidebar-style="arctic-ops"] .root-agent-title {
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+html.light-theme[data-sidebar-style="arctic-ops"] .root-agent-avatar {
+  background: rgba(100, 160, 220, 0.1);
+  border-color: rgba(100, 160, 220, 0.2);
+  color: rgba(60, 120, 200, 0.9);
 }
 
 /* =============================================================================
@@ -3298,6 +3456,32 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .ac-discovery-item:has(.ac-
 [data-sidebar-style="obsidian-mesh"] .ac-wg-subgroup > .session-item:not(:has(.ac-discovery-badge.coord)) {
   padding-top: 3px;
   padding-bottom: 3px;
+}
+
+[data-sidebar-style="obsidian-mesh"] .root-agent-banner {
+  background: rgba(220, 160, 40, 0.04);
+  border-bottom: 1px solid rgba(220, 160, 40, 0.1);
+}
+
+[data-sidebar-style="obsidian-mesh"] .root-agent-banner:hover {
+  background: rgba(220, 160, 40, 0.08);
+}
+
+[data-sidebar-style="obsidian-mesh"] .root-agent-avatar {
+  background: rgba(220, 160, 40, 0.1);
+  border-color: rgba(220, 160, 40, 0.25);
+  color: rgba(220, 160, 40, 0.9);
+}
+
+[data-sidebar-style="obsidian-mesh"] .root-agent-title {
+  font-weight: 800;
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.05em;
+}
+
+[data-sidebar-style="obsidian-mesh"] .root-agent-subtitle {
+  color: rgba(220, 160, 40, 0.5);
 }
 
 /* =============================================================================
@@ -3721,6 +3905,34 @@ html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access {
 [data-sidebar-style="neon-circuit"] .coord-quick-item--session .session-item-name {
   font-weight: 700;
   color: rgba(255, 80, 200, 0.9);
+}
+
+[data-sidebar-style="neon-circuit"] .root-agent-banner {
+  background: rgba(0, 220, 255, 0.03);
+  border-bottom: 1px solid rgba(0, 220, 255, 0.1);
+}
+
+[data-sidebar-style="neon-circuit"] .root-agent-banner:hover {
+  background: rgba(0, 220, 255, 0.06);
+  border-bottom-color: rgba(0, 220, 255, 0.2);
+}
+
+[data-sidebar-style="neon-circuit"] .root-agent-avatar {
+  background: rgba(255, 0, 180, 0.1);
+  border-color: rgba(255, 0, 180, 0.25);
+  color: rgba(255, 0, 180, 0.9);
+}
+
+[data-sidebar-style="neon-circuit"] .root-agent-title {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 10px;
+  font-weight: 700;
+  color: rgba(0, 220, 255, 0.9);
+}
+
+[data-sidebar-style="neon-circuit"] .root-agent-subtitle {
+  color: rgba(255, 0, 180, 0.6);
 }
 
 /* ===== Entity Creation Modals ===== */
