@@ -209,7 +209,7 @@ const OnboardingModal: Component<{ onClose: () => void }> = (props) => {
                 disabled={!canConfirm() || saving()}
                 onClick={handleConfirm}
               >
-                {saving() ? "Setting up..." : "Set up agent"}
+                {saving() ? "Setting up..." : "Set up Coding Agent"}
               </button>
             </>
           }>
