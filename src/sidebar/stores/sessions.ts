@@ -10,6 +10,7 @@ const [state, setState] = createStore<SessionsState>({
   teams: [],
   teamFilter: null,
   showInactive: false,
+  showCategories: true,
   repos: [],
 });
 
@@ -232,6 +233,9 @@ export const sessionsStore = {
   get showInactive() {
     return state.showInactive;
   },
+  get showCategories() {
+    return state.showCategories;
+  },
   get repos() {
     return state.repos;
   },
@@ -318,6 +322,10 @@ export const sessionsStore = {
 
   toggleShowInactive() {
     setState("showInactive", !state.showInactive);
+  },
+
+  toggleShowCategories() {
+    setState("showCategories", !state.showCategories);
   },
 
   toggleTeamCollapsed(teamId: string) {

@@ -169,6 +169,7 @@ export interface SessionsState {
   teams: Team[];
   teamFilter: string | null;
   showInactive: boolean;
+  showCategories: boolean;
   repos: RepoMatch[];
 }
 

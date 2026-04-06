@@ -219,18 +219,16 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           <span class="settings-label">App Theme</span>
           <select
             class="settings-input"
-            value={settings.data!.sidebarStyle ?? "classic"}
+            value={settings.data!.sidebarStyle ?? "noir-minimal"}
             onChange={(e) => {
               updateField("sidebarStyle", e.currentTarget.value);
               document.documentElement.dataset.sidebarStyle = e.currentTarget.value;
             }}
           >
-            <option value="classic">Classic</option>
             <option value="noir-minimal">Noir Minimal</option>
             <option value="card-sections">Card Sections</option>
             <option value="command-center">Command Center</option>
             <option value="deep-space">Deep Space</option>
-            <option value="signal-grid">Signal Grid</option>
             <option value="arctic-ops">Arctic Ops</option>
             <option value="obsidian-mesh">Obsidian Mesh</option>
             <option value="neon-circuit">Neon Circuit</option>

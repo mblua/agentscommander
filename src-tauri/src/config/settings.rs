@@ -95,7 +95,7 @@ pub struct AppSettings {
     /// Currently loaded project paths (multi-project support)
     #[serde(default)]
     pub project_paths: Vec<String>,
-    /// Sidebar visual style: "classic", "noir-minimal", "card-sections", "command-center"
+    /// Sidebar visual style: "noir-minimal", "card-sections", "command-center", "deep-space", "arctic-ops", "obsidian-mesh", "neon-circuit"
     #[serde(default = "default_sidebar_style")]
     pub sidebar_style: String,
     /// Root token that bypasses all routing checks in the send command
@@ -131,7 +131,7 @@ fn default_web_bind() -> String {
 }
 
 fn default_sidebar_style() -> String {
-    "classic".to_string()
+    "noir-minimal".to_string()
 }
 
 impl Default for AppSettings {

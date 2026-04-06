@@ -114,9 +114,9 @@ const ActionBar: Component = () => {
         </div>
         <div class="action-bar-icons">
           <button
-            class={`toolbar-gear-btn show-inactive-btn ${sessionsStore.showInactive ? "active" : ""}`}
-            onClick={() => sessionsStore.toggleShowInactive()}
-            title={sessionsStore.showInactive ? "Hide inactive agents" : "Show inactive agents"}
+            class={`toolbar-gear-btn show-categories-btn ${sessionsStore.showCategories ? "active" : ""}`}
+            onClick={() => sessionsStore.toggleShowCategories()}
+            title={sessionsStore.showCategories ? "Hide category sections" : "Show category sections"}
           >
             &#x1F441;
           </button>

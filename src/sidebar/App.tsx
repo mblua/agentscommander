@@ -66,10 +66,10 @@ const SidebarApp: Component = () => {
     // Apply window settings
     const appSettings = await SettingsAPI.get();
     raiseTerminalEnabled = appSettings.raiseTerminalOnClick;
-    // Apply sidebar style from settings
-    if (appSettings.sidebarStyle && appSettings.sidebarStyle !== "classic") {
-      document.documentElement.dataset.sidebarStyle = appSettings.sidebarStyle;
-    }
+    // Apply sidebar style from settings (remap removed themes to default)
+    const style = appSettings.sidebarStyle;
+    const removedThemes = ["classic", "signal-grid"];
+    document.documentElement.dataset.sidebarStyle = (!style || removedThemes.includes(style)) ? "noir-minimal" : style;
     if (appSettings.sidebarAlwaysOnTop && isTauri) {
       const { getCurrentWindow } = await import("@tauri-apps/api/window");
       await getCurrentWindow().setAlwaysOnTop(true);
