@@ -2553,6 +2553,12 @@ html, body, #root {
   padding-left: calc(var(--spacing-md) + 20px);
 }
 
+[data-sidebar-style="noir-minimal"] .coord-quick-access {
+  display: block;
+  margin: 4px 6px 2px;
+  padding: 4px 0;
+}
+
 /* =============================================================================
    SIDEBAR STYLE: Card Sections
    - Boxed groups with surface elevation and rounded containers
