@@ -514,19 +514,35 @@ const ProjectPanel: Component = () => {
                                     <For each={wg.agents}>
                                       {(replica) => {
                                         const session = () => replicaSession(wg, replica);
+                                        const isCoord = () => isReplicaCoordinator(replica, proj.folderName, proj.teams, wg.teamName);
+                                        const rn = () => replicaRepoName(replica) || stripRepoPrefix(wg.repoPath?.replace(/\\/g, "/").split("/").pop() ?? "") || proj.folderName;
+                                        const branchLabel = () => {
+                                          const s = session();
+                                          if (s?.gitBranch) {
+                                            const name = rn();
+                                            return name && !s.gitBranch.includes("/") ? `${name}/${s.gitBranch}` : s.gitBranch;
+                                          }
+                                          const name = rn();
+                                          return name ? (replica.repoBranch ? `${name}/${replica.repoBranch}` : name) : null;
+                                        };
+
+                                        const badges = () => (
+                                          <div class="ac-discovery-badges">
+                                            <Show when={branchLabel()}>
+                                              <span class="ac-discovery-badge branch">{branchLabel()}</span>
+                                            </Show>
+                                            <Show when={isCoord()}>
+                                              <span class="ac-discovery-badge coord">coordinator</span>
+                                            </Show>
+                                          </div>
+                                        );
+
                                         return (
                                           <Show
                                             when={session()}
                                             fallback={
                                               (() => {
                                                 const dotClass = () => replicaDotClass(wg, replica);
-                                                const repoName = () => replicaRepoName(replica);
-                                                const branchLabel = () => {
-                                                  const name = repoName();
-                                                  if (!name) return null;
-                                                  return replica.repoBranch ? `${name}/${replica.repoBranch}` : name;
-                                                };
-                                                const isCoord = () => isReplicaCoordinator(replica, proj.folderName, proj.teams, wg.teamName);
                                                 return (
                                                   <div
                                                     class="ac-discovery-item"
@@ -536,14 +552,7 @@ const ProjectPanel: Component = () => {
                                                     <div class={`session-item-status ${dotClass()}`} />
                                                     <div class="ac-discovery-item-info">
                                                       <span class="ac-discovery-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
-                                                      <div class="ac-discovery-badges">
-                                                        <Show when={isCoord()}>
-                                                          <span class="ac-discovery-badge coord">coordinator</span>
-                                                        </Show>
-                                                        <Show when={branchLabel()}>
-                                                          <span class="ac-discovery-badge branch">{branchLabel()}</span>
-                                                        </Show>
-                                                      </div>
+                                                      {badges()}
                                                     </div>
                                                   </div>
                                                 );
@@ -551,16 +560,6 @@ const ProjectPanel: Component = () => {
                                             }
                                           >
                                             {(s) => {
-                                              const rn = () => replicaRepoName(replica) || stripRepoPrefix(wg.repoPath?.replace(/\\/g, "/").split("/").pop() ?? "") || proj.folderName;
-                                              const branchLabel = () => {
-                                                const sess = s();
-                                                const name = rn();
-                                                if (sess.gitBranch && name) {
-                                                  return sess.gitBranch.includes("/") ? sess.gitBranch : `${name}/${sess.gitBranch}`;
-                                                }
-                                                return sess.gitBranch || null;
-                                              };
-                                              const isCoord = () => isReplicaCoordinator(replica, proj.folderName, proj.teams, wg.teamName);
                                               const stripped = () => ({ ...s(), gitBranch: null as string | null });
                                               return (
                                                 <div class="ac-wg-session-wrapper">
@@ -569,14 +568,7 @@ const ProjectPanel: Component = () => {
                                                     isActive={s().id === sessionsStore.activeId}
                                                     originProject={replica.originProject}
                                                   />
-                                                  <div class="ac-discovery-badges">
-                                                    <Show when={branchLabel()}>
-                                                      <span class="ac-discovery-badge branch">{branchLabel()}</span>
-                                                    </Show>
-                                                    <Show when={isCoord()}>
-                                                      <span class="ac-discovery-badge coord">coordinator</span>
-                                                    </Show>
-                                                  </div>
+                                                  {badges()}
                                                 </div>
                                               );
                                             }}
