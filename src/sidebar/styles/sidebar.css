@@ -2278,16 +2278,6 @@ html.light-theme .root-agent-avatar {
   flex-wrap: wrap;
 }
 
-/* Wrapper for SessionItem + badges in workgroup agent list */
-.ac-wg-session-wrapper {
-  display: flex;
-  flex-direction: column;
-}
-
-.ac-wg-session-wrapper .ac-discovery-badges {
-  padding: 0 12px 2px;
-}
-
 .ac-discovery-badge {
   font-size: 8px;
   font-weight: 600;
@@ -3706,21 +3696,6 @@ html.light-theme[data-sidebar-style="neon-circuit"] .session-item.active {
   letter-spacing: 0.05em;
 }
 
-/* When a coord-quick-item wraps a SessionItem, stack vertically so badges row sits below */
-.coord-quick-item--session {
-  flex-direction: column;
-  align-items: stretch;
-  padding: 0;
-}
-
-.coord-quick-item--session .session-item {
-  border-left-width: 0;
-}
-
-.coord-quick-item--session .ac-discovery-badges {
-  padding: 0 12px 4px;
-}
-
 /* ---- Deep Space: coordinator quick-access enabled ---- */
 
 [data-sidebar-style="deep-space"] .coord-quick-access {
@@ -3784,17 +3759,6 @@ html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access::before {
   color: rgba(160, 100, 10, 0.5);
 }
 
-/* When session item is inside coord quick access in deep-space */
-[data-sidebar-style="deep-space"] .coord-quick-item--session .session-item {
-  border-radius: 4px;
-  margin: 1px 4px;
-}
-
-[data-sidebar-style="deep-space"] .coord-quick-item--session .session-item-name {
-  font-weight: 700;
-  color: rgba(255, 210, 130, 0.95);
-}
-
 /* ---- Obsidian Mesh: coordinator quick-access enabled ---- */
 
 [data-sidebar-style="obsidian-mesh"] .coord-quick-access {
@@ -3843,11 +3807,6 @@ html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access {
 
 html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-name {
   color: rgba(160, 70, 0, 0.9);
-}
-
-[data-sidebar-style="obsidian-mesh"] .coord-quick-item--session .session-item-name {
-  font-weight: 800;
-  color: rgba(255, 180, 100, 0.95);
 }
 
 /* ---- Neon Circuit: coordinator quick-access enabled ---- */
@@ -3916,11 +3875,6 @@ html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-name {
 
 html.light-theme[data-sidebar-style="neon-circuit"] .coord-quick-access {
   border-color: rgba(200, 0, 140, 0.12);
-}
-
-[data-sidebar-style="neon-circuit"] .coord-quick-item--session .session-item-name {
-  font-weight: 700;
-  color: rgba(255, 80, 200, 0.9);
 }
 
 [data-sidebar-style="neon-circuit"] .root-agent-banner {
