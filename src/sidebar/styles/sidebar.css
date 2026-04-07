@@ -326,7 +326,7 @@ html, body, #root {
 .team-group-status.running { background: var(--status-running); }
 .team-group-status.idle { background: var(--status-idle); }
 .team-group-status.exited { background: var(--status-exited); }
-.team-group-status.offline { background: #555; }
+.team-group-status.offline { background: var(--status-offline); }
 
 .team-group-name {
   font-size: var(--font-size-sm);
@@ -456,7 +456,7 @@ html, body, #root {
 .session-item-status.running { background: var(--status-running); }
 .session-item-status.idle { background: var(--status-idle); }
 .session-item-status.exited { background: var(--status-exited); }
-.session-item-status.offline { background: #555; }
+.session-item-status.offline { background: var(--status-offline); }
 /* .pending = agent finished but user hasn't focused yet (yellow) */
 .session-item .session-item-status.pending,
 .replica-item .session-item-status.pending { background: var(--status-pending); box-shadow: 0 0 6px var(--status-pending); }

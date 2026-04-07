@@ -16,6 +16,7 @@
   --status-exited: #ff3b5c;
   --status-waiting: #22c55e;
   --status-pending: #eab308;
+  --status-offline: rgba(255, 255, 255, 0.25);
 
   /* Titlebar */
   --titlebar-bg: #08080d;
@@ -66,6 +67,7 @@ html.light-theme {
   --status-exited: #dc2626;
   --status-waiting: #16a34a;
   --status-pending: #ca8a04;
+  --status-offline: rgba(0, 0, 0, 0.2);
 
   --titlebar-bg: #e8e8ec;
   --titlebar-fg: #4b5563;
