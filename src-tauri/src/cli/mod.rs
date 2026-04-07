@@ -1,3 +1,4 @@
+pub mod close_session;
 pub mod create_agent;
 pub mod list_peers;
 pub mod list_sessions;
@@ -32,6 +33,8 @@ pub enum Commands {
     ListSessions(list_sessions::ListSessionsArgs),
     /// Create a new agent: folder + CLAUDE.md, optionally launch it
     CreateAgent(create_agent::CreateAgentArgs),
+    /// Close all sessions for a target agent (coordinator authorization required)
+    CloseSession(close_session::CloseSessionArgs),
 }
 
 /// Attach to parent console on Windows release builds so CLI output is visible.
@@ -103,5 +106,6 @@ pub fn handle_cli(cmd: Commands) -> i32 {
         Commands::ListPeers(args) => list_peers::execute(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
         Commands::CreateAgent(args) => create_agent::execute(args),
+        Commands::CloseSession(args) => close_session::execute(args),
     }
 }

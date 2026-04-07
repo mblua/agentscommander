@@ -2,45 +2,17 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
-use serde::{Deserialize, Serialize};
 use tauri::Manager;
 use uuid::Uuid;
 
 use crate::config::agent_config::AgentLocalConfig;
 use crate::config::settings::SettingsState;
 use crate::config::teams;
+use crate::phone::types::OutboxMessage;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
 use crate::{AppOutbox, MasterToken};
-
-/// Message format in outbox files. All new fields are Option/default for backwards compat.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OutboxMessage {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-    pub from: String,
-    pub to: String,
-    pub body: String,
-    #[serde(default)]
-    pub mode: String,
-    #[serde(default)]
-    pub get_output: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sender_agent: Option<String>,
-    #[serde(default)]
-    pub preferred_agent: String,
-    #[serde(default)]
-    pub priority: String,
-    pub timestamp: String,
-    /// Remote command to execute on agent's PTY (e.g., "clear", "compact")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-}
 
 /// Tracks delivery attempts for a single outbox message.
 struct RetryState {
@@ -320,6 +292,22 @@ impl MailboxPoller {
             log::info!("[mailbox] Routing check passed: '{}' → '{}'", msg.from, msg.to);
         }
 
+        // Action-based dispatch (close-session, etc.) — handled before mode-based delivery
+        if let Some(ref action) = msg.action {
+            match action.as_str() {
+                "close-session" => {
+                    return self.handle_close_session(app, path, &msg).await;
+                }
+                _ => {
+                    return self.reject_message(
+                        path,
+                        &msg,
+                        &format!("Unknown action '{}'", action),
+                    ).await;
+                }
+            }
+        }
+
         // Deliver based on mode — all modes require immediate delivery or rejection
         let mode = if msg.mode.is_empty() { "wake" } else { msg.mode.as_str() };
         match mode {
@@ -479,29 +467,11 @@ impl MailboxPoller {
                             tokio::time::sleep(poll).await;
                         }
 
-                        // Destroy the temporary session
-                        let pty_mgr = app_clone.state::<Arc<Mutex<PtyManager>>>();
-                        if let Ok(mgr) = pty_mgr.lock() {
-                            let _ = mgr.kill(session_id_clone);
+                        // Destroy the temporary session via shared destroy logic
+                        match crate::commands::session::destroy_session_inner(&app_clone, session_id_clone).await {
+                            Ok(()) => log::info!("wake-and-sleep: destroyed temp session {}", session_id_clone),
+                            Err(e) => log::warn!("wake-and-sleep: failed to destroy temp session {}: {}", session_id_clone, e),
                         }
-
-                        let session_mgr = app_clone
-                            .state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                        {
-                            let mgr = session_mgr.read().await;
-                            let _ = mgr.destroy_session(session_id_clone).await;
-                        } // guard dropped before persist
-
-                        let _ = tauri::Emitter::emit(
-                            &app_clone,
-                            "session_destroyed",
-                            serde_json::json!({ "id": session_id_clone.to_string() }),
-                        );
-                        log::info!("wake-and-sleep: destroyed temp session {}", session_id_clone);
-
-                        // Persist immediately so the temp session is flushed from sessions.json
-                        let mgr = session_mgr.read().await;
-                        crate::config::sessions_persistence::persist_current_state(&mgr).await;
                     });
 
                     Ok(())
@@ -793,6 +763,123 @@ impl MailboxPoller {
             agent_name, best.id, best.name, best.status
         );
         Uuid::parse_str(&best.id).ok()
+    }
+
+    /// Find ALL sessions matching an agent name (by working directory).
+    /// Returns all matching session UUIDs, not just the "best" one.
+    async fn find_all_sessions(&self, app: &tauri::AppHandle, agent_name: &str) -> Vec<Uuid> {
+        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+        let mgr = session_mgr.read().await;
+        let sessions = mgr.list_sessions().await;
+
+        sessions
+            .iter()
+            .filter(|s| {
+                let normalized = s.working_directory.replace('\\', "/");
+                self.agent_name_from_path(&s.working_directory) == agent_name
+                    || normalized.ends_with(agent_name)
+                    || normalized.contains(&format!("/{}", agent_name))
+            })
+            .filter_map(|s| Uuid::parse_str(&s.id).ok())
+            .collect()
+    }
+
+    /// Handle close-session action: validate coordinator auth, find target sessions, destroy them.
+    async fn handle_close_session(
+        &self,
+        app: &tauri::AppHandle,
+        path: &std::path::Path,
+        msg: &OutboxMessage,
+    ) -> Result<(), String> {
+        let target = msg.target.as_deref()
+            .ok_or_else(|| "close-session requires 'target' field".to_string())?;
+
+        // Re-check master token for coordinator auth bypass (independent of routing bypass above)
+        let is_master = if let Some(ref token_str) = msg.token {
+            let master = app.state::<MasterToken>();
+            if master.matches(token_str) {
+                true
+            } else {
+                let settings = crate::config::settings::load_settings();
+                settings.root_token.as_deref() == Some(token_str.as_str())
+            }
+        } else {
+            false
+        };
+
+        if !is_master {
+            let discovered = teams::discover_teams();
+            if !teams::is_coordinator_of(&msg.from, target, &discovered) {
+                return self.reject_message(
+                    path,
+                    msg,
+                    &format!(
+                        "Not authorized: '{}' is not a coordinator of '{}' team",
+                        msg.from, target
+                    ),
+                ).await;
+            }
+        }
+
+        // Find all sessions for the target agent
+        let session_ids = self.find_all_sessions(app, target).await;
+        if session_ids.is_empty() {
+            return self.reject_message(
+                path,
+                msg,
+                &format!("No active session found for '{}'", target),
+            ).await;
+        }
+
+        log::info!(
+            "[mailbox] close-session: destroying {} session(s) for '{}' (requested by '{}')",
+            session_ids.len(), target, msg.from
+        );
+
+        // Destroy each session
+        let mut closed_ids: Vec<String> = Vec::new();
+        for sid in &session_ids {
+            match crate::commands::session::destroy_session_inner(app, *sid).await {
+                Ok(()) => {
+                    log::info!("[mailbox] close-session: destroyed session {}", sid);
+                    closed_ids.push(sid.to_string());
+                }
+                Err(e) => {
+                    log::warn!("[mailbox] close-session: failed to destroy session {}: {}", sid, e);
+                }
+            }
+        }
+
+        // Write response with details to sender's responses/ dir.
+        // If closed_ids is empty, sessions were found but already exited/destroyed
+        // between find and destroy (race condition) — report as already_closed, not error.
+        if let Some(ref rid) = msg.request_id {
+            let status = if closed_ids.is_empty() { "already_closed" } else { "closed" };
+            let response = serde_json::json!({
+                "action": "close-session",
+                "target": target,
+                "status": status,
+                "sessions_closed": closed_ids.len(),
+                "session_ids": closed_ids,
+                "requested_by": msg.from,
+            });
+
+            if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
+                let responses_dir = std::path::PathBuf::from(sender_path)
+                    .join(crate::config::agent_local_dir_name())
+                    .join("responses");
+                let _ = std::fs::create_dir_all(&responses_dir);
+                let response_path = responses_dir.join(format!("{}.json", rid));
+                if let Ok(json) = serde_json::to_string_pretty(&response) {
+                    if let Err(e) = std::fs::write(&response_path, json) {
+                        log::warn!("[mailbox] Failed to write close-session response: {}", e);
+                    }
+                }
+            }
+        }
+
+        // Move original message to delivered/
+        self.move_to_delivered(path, msg).await
     }
 
     /// Resolve the full filesystem path for an agent name.

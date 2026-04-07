@@ -1,9 +1,9 @@
 use clap::Args;
-use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use uuid::Uuid;
 
 use crate::config::teams;
+use crate::phone::types::OutboxMessage;
 
 #[derive(Args)]
 #[command(after_help = "\
@@ -66,44 +66,16 @@ pub struct SendArgs {
     pub outbox: Option<String>,
 }
 
-/// Outbox message written to <local-dir>/outbox/<uuid>.json
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct OutboxMessage {
-    pub id: String,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub token: Option<String>,
-    pub from: String,
-    pub to: String,
-    pub body: String,
-    #[serde(default)]
-    pub mode: String,
-    #[serde(default)]
-    pub get_output: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub request_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub sender_agent: Option<String>,
-    #[serde(default)]
-    pub preferred_agent: String,
-    #[serde(default)]
-    pub priority: String,
-    pub timestamp: String,
-    /// Remote command to execute on agent's PTY (e.g., "clear", "compact")
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub command: Option<String>,
-}
-
 /// Strip `__agent_` and `_agent_` prefixes from directory names.
-fn strip_agent_prefix(name: &str) -> &str {
+pub(crate) fn strip_agent_prefix(name: &str) -> &str {
     name.strip_prefix("__agent_")
         .or_else(|| name.strip_prefix("_agent_"))
         .unwrap_or(name)
 }
 
-/// Derive agent name from a path: last two components → "parent/folder",
+/// Derive agent name from a path: last two components -> "parent/folder",
 /// stripping `__agent_`/`_agent_` prefixes for consistent WG replica naming.
-fn agent_name_from_root(root: &str) -> String {
+pub(crate) fn agent_name_from_root(root: &str) -> String {
     let normalized = root.replace('\\', "/");
     let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
     if components.len() >= 2 {
@@ -215,6 +187,9 @@ pub fn execute(args: SendArgs) -> i32 {
         priority: "normal".to_string(),
         timestamp: chrono::Utc::now().to_rfc3339(),
         command: args.command,
+        action: None,
+        target: None,
+        force: None,
     };
 
     // Write to --outbox if specified, app outbox if root/master token, otherwise <root>/<local_dir>/outbox/

@@ -316,25 +316,21 @@ pub async fn create_session(
     Ok(info)
 }
 
-#[tauri::command]
-pub async fn destroy_session(
-    app: AppHandle,
-    session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
-    pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
-    tg_mgr: State<'_, TelegramBridgeState>,
-    detached: State<'_, DetachedSessionsState>,
-    id: String,
-) -> Result<(), String> {
-    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+/// Core session destruction logic shared by the Tauri command and the MailboxPoller.
+/// Kills PTY, detaches Telegram bridge, removes from SessionManager, persists, and emits events.
+pub async fn destroy_session_inner(app: &AppHandle, uuid: Uuid) -> Result<(), String> {
+    let id = uuid.to_string();
 
     // Remove from detached set
     {
+        let detached = app.state::<DetachedSessionsState>();
         let mut detached_set = detached.lock().unwrap();
         detached_set.remove(&uuid);
     }
 
     // Auto-detach Telegram bridge if active
     {
+        let tg_mgr = app.state::<TelegramBridgeState>();
         let mut tg = tg_mgr.lock().await;
         if tg.has_bridge(uuid) {
             let _ = tg.detach(uuid);
@@ -346,12 +342,16 @@ pub async fn destroy_session(
     }
 
     // Kill the PTY first
-    pty_mgr
-        .lock()
-        .unwrap()
-        .kill(uuid)
-        .map_err(|e| e.to_string())?;
+    {
+        let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
+        pty_mgr
+            .lock()
+            .unwrap()
+            .kill(uuid)
+            .map_err(|e| e.to_string())?;
+    }
 
+    let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
     let mgr = session_mgr.read().await;
     let new_active = mgr
         .destroy_session(uuid)
@@ -387,6 +387,19 @@ pub async fn destroy_session(
     }
 
     Ok(())
+}
+
+#[tauri::command]
+pub async fn destroy_session(
+    app: AppHandle,
+    _session_mgr: State<'_, Arc<tokio::sync::RwLock<SessionManager>>>,
+    _pty_mgr: State<'_, Arc<Mutex<PtyManager>>>,
+    _tg_mgr: State<'_, TelegramBridgeState>,
+    _detached: State<'_, DetachedSessionsState>,
+    id: String,
+) -> Result<(), String> {
+    let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
+    destroy_session_inner(&app, uuid).await
 }
 
 #[tauri::command]

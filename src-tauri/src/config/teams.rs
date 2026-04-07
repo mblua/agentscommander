@@ -175,7 +175,10 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
         if agent_matches_member(agent_name, coord_name, team.coordinator_path.as_ref()) {
             return true;
         }
-        // WG-aware: if agent is a WG replica of this team's coordinator, match by suffix
+        // WG-aware: if agent is a WG replica of this team's coordinator, match by suffix.
+        // By design, any coordinator with the same suffix in any WG of the same team name
+        // has cross-WG authority. This enables coordinator replicas (e.g., wg-2/tech-lead)
+        // to manage agents in teams originally defined with wg-1/tech-lead as coordinator.
         if let Some(wg_team) = extract_wg_team(agent_name) {
             if wg_team == team.name && agent_suffix(agent_name) == agent_suffix(coord_name) {
                 return true;
@@ -183,6 +186,13 @@ fn is_coordinator(agent_name: &str, team: &DiscoveredTeam) -> bool {
         }
     }
     false
+}
+
+/// Check if sender is a coordinator of any team that contains target as a member.
+pub fn is_coordinator_of(sender: &str, target: &str, teams: &[DiscoveredTeam]) -> bool {
+    teams.iter().any(|team| {
+        is_coordinator(sender, team) && is_in_team(target, team)
+    })
 }
 
 /// Check if two agents can communicate based on discovery-based team routing rules.
