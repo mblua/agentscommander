@@ -190,6 +190,7 @@ pub fn execute(args: SendArgs) -> i32 {
         action: None,
         target: None,
         force: None,
+        timeout_secs: None,
     };
 
     // Write to --outbox if specified, app outbox if root/master token, otherwise <root>/<local_dir>/outbox/

@@ -33,9 +33,12 @@ pub struct OutboxMessage {
     /// Target agent name for action-based operations (e.g., close-session target)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<String>,
-    /// Force mode for close-session (true = immediate kill)
+    /// Force mode for close-session (true = immediate kill, false = graceful)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub force: Option<bool>,
+    /// Timeout in seconds for graceful shutdown before fallback to force-kill
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_secs: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

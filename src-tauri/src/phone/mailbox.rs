@@ -831,22 +831,24 @@ impl MailboxPoller {
             ).await;
         }
 
+        let force = msg.force.unwrap_or(false);
+        let timeout_secs = msg.timeout_secs.unwrap_or(30);
+
         log::info!(
-            "[mailbox] close-session: destroying {} session(s) for '{}' (requested by '{}')",
-            session_ids.len(), target, msg.from
+            "[mailbox] close-session: {} {} session(s) for '{}' (requested by '{}', timeout={}s)",
+            if force { "force-killing" } else { "gracefully closing" },
+            session_ids.len(), target, msg.from, timeout_secs
         );
 
-        // Destroy each session
         let mut closed_ids: Vec<String> = Vec::new();
         for sid in &session_ids {
-            match crate::commands::session::destroy_session_inner(app, *sid).await {
-                Ok(()) => {
-                    log::info!("[mailbox] close-session: destroyed session {}", sid);
-                    closed_ids.push(sid.to_string());
-                }
-                Err(e) => {
-                    log::warn!("[mailbox] close-session: failed to destroy session {}: {}", sid, e);
-                }
+            let success = if force {
+                self.force_close_session(app, *sid).await
+            } else {
+                self.graceful_close_session(app, *sid, timeout_secs).await
+            };
+            if success {
+                closed_ids.push(sid.to_string());
             }
         }
 
@@ -880,6 +882,107 @@ impl MailboxPoller {
 
         // Move original message to delivered/
         self.move_to_delivered(path, msg).await
+    }
+
+    /// Force-close a session immediately via destroy_session_inner.
+    async fn force_close_session(&self, app: &tauri::AppHandle, sid: Uuid) -> bool {
+        match crate::commands::session::destroy_session_inner(app, sid).await {
+            Ok(()) => {
+                log::info!("[mailbox] close-session: force-destroyed session {}", sid);
+                true
+            }
+            Err(e) => {
+                log::warn!("[mailbox] close-session: failed to force-destroy session {}: {}", sid, e);
+                false
+            }
+        }
+    }
+
+    /// Gracefully close a session: inject exit command, poll for Exited, fallback to force on timeout.
+    async fn graceful_close_session(&self, app: &tauri::AppHandle, sid: Uuid, timeout_secs: u32) -> bool {
+        // Get session info to determine agent type
+        let exit_cmd = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            let sessions = mgr.list_sessions().await;
+            match sessions.iter().find(|s| s.id == sid.to_string()) {
+                Some(s) => Self::resolve_exit_command(&s.shell, &s.shell_args),
+                None => {
+                    log::warn!("[mailbox] close-session: session {} not found for graceful close", sid);
+                    return false;
+                }
+            }
+        };
+
+        log::info!("[mailbox] close-session: injecting '{}' into session {}", exit_cmd.escape_debug(), sid);
+
+        // Inject exit command into PTY.
+        // Clone the Arc so the State borrow is released, then lock+write+drop guard before any .await.
+        let pty_arc = app.state::<Arc<std::sync::Mutex<crate::pty::manager::PtyManager>>>().inner().clone();
+        let inject_result = match pty_arc.lock() {
+            Ok(mgr) => {
+                let res = mgr.write(sid, exit_cmd.as_bytes()).map_err(|e| e.to_string());
+                drop(mgr);
+                res
+            }
+            Err(e) => Err(format!("PTY lock failed: {}", e)),
+        };
+        if let Err(e) = inject_result {
+            log::warn!("[mailbox] close-session: PTY inject failed for {}: {}, falling back to force", sid, e);
+            return self.force_close_session(app, sid).await;
+        }
+
+        // Poll for SessionStatus::Exited
+        let timeout = std::time::Duration::from_secs(timeout_secs as u64);
+        let poll_interval = std::time::Duration::from_secs(1);
+        let start = std::time::Instant::now();
+
+        loop {
+            if start.elapsed() >= timeout {
+                log::warn!(
+                    "[mailbox] close-session: graceful timeout ({}s) for session {}, falling back to force",
+                    timeout_secs, sid
+                );
+                return self.force_close_session(app, sid).await;
+            }
+
+            tokio::time::sleep(poll_interval).await;
+
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            let sessions = mgr.list_sessions().await;
+            match sessions.iter().find(|s| s.id == sid.to_string()) {
+                Some(s) if matches!(s.status, SessionStatus::Exited(_)) => {
+                    log::info!("[mailbox] close-session: session {} exited gracefully", sid);
+                    drop(mgr);
+                    // Clean up the exited session
+                    return self.force_close_session(app, sid).await;
+                }
+                None => {
+                    // Session already removed
+                    log::info!("[mailbox] close-session: session {} already gone", sid);
+                    return true;
+                }
+                _ => {} // still running, keep polling
+            }
+        }
+    }
+
+    /// Determine the exit command to inject based on the session's shell/agent type.
+    /// Claude Code -> "/exit\r", generic shell/codex -> "exit\r"
+    fn resolve_exit_command(shell: &str, shell_args: &[String]) -> String {
+        let full_cmd = format!("{} {}", shell, shell_args.join(" "));
+        let basenames: Vec<String> = full_cmd
+            .split_whitespace()
+            .map(|t| crate::commands::session::executable_basename(t))
+            .collect();
+
+        if basenames.iter().any(|b| b == "claude" || b == "aider") {
+            "/exit\r".to_string()
+        } else {
+            // Codex, generic shell, and other CLIs
+            "exit\r".to_string()
+        }
     }
 
     /// Resolve the full filesystem path for an agent name.

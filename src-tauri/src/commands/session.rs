@@ -487,7 +487,7 @@ pub async fn set_last_prompt(
 }
 
 /// Extract the basename (without extension) from a path or command token.
-fn executable_basename(s: &str) -> String {
+pub(crate) fn executable_basename(s: &str) -> String {
     std::path::Path::new(s)
         .file_stem()
         .and_then(|s| s.to_str())

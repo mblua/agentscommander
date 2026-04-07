@@ -11,8 +11,10 @@ use super::send::agent_name_from_root;
 #[command(after_help = "\
 AUTHORIZATION: Only coordinators of the target agent's team can close sessions. \
 The master/root token bypasses this check.\n\n\
-BEHAVIOR: --force (default) immediately kills all sessions for the target agent. \
-Graceful shutdown (--graceful) is planned for a future phase.\n\n\
+BEHAVIOR: By default, graceful shutdown is used — an exit command is injected into \
+the agent's PTY (e.g., /exit for Claude Code) and the system waits for clean exit. \
+If the agent doesn't exit within --timeout seconds, it falls back to force-kill. \
+Use --force to skip graceful shutdown and kill immediately.\n\n\
 DISCOVERY: Use `list-peers` to get valid agent names for --target.")]
 pub struct CloseSessionArgs {
     /// Session token for authentication (from '# === Session Credentials ===' block)
@@ -27,9 +29,13 @@ pub struct CloseSessionArgs {
     #[arg(long)]
     pub target: String,
 
-    /// Force-kill all sessions for the target agent (default behavior)
-    #[arg(long, default_value = "true")]
+    /// Force-kill immediately, skipping graceful shutdown
+    #[arg(long)]
     pub force: bool,
+
+    /// Graceful shutdown timeout in seconds per session (default: 30)
+    #[arg(long, default_value = "30")]
+    pub timeout: u32,
 }
 
 pub fn execute(args: CloseSessionArgs) -> i32 {
@@ -85,6 +91,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         action: Some("close-session".to_string()),
         target: Some(args.target.clone()),
         force: Some(args.force),
+        timeout_secs: Some(args.timeout),
     };
 
     // Write to outbox — use app outbox for root/master token, else agent's outbox
@@ -149,10 +156,11 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         std::thread::sleep(confirm_poll);
     }
 
-    // Wait for response with session details
+    // Wait for response with session details.
+    // Timeout must exceed graceful shutdown timeout + processing overhead.
     let responses_dir = ac_dir.join("responses");
     let response_path = responses_dir.join(format!("{}.json", request_id));
-    let resp_timeout = std::time::Duration::from_secs(30);
+    let resp_timeout = std::time::Duration::from_secs((args.timeout + 15) as u64);
     let resp_poll = std::time::Duration::from_millis(500);
     let resp_start = std::time::Instant::now();
 
