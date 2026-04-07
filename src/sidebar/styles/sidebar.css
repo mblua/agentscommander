@@ -3696,13 +3696,19 @@ html.light-theme[data-sidebar-style="neon-circuit"] .session-item.active {
   letter-spacing: 0.05em;
 }
 
-/* When a coord-quick-item wraps a SessionItem, remove redundant padding */
+/* When a coord-quick-item wraps a SessionItem, stack vertically so badges row sits below */
 .coord-quick-item--session {
+  flex-direction: column;
+  align-items: stretch;
   padding: 0;
 }
 
 .coord-quick-item--session .session-item {
   border-left-width: 0;
+}
+
+.coord-quick-item--session .ac-discovery-badges {
+  padding: 0 12px 4px;
 }
 
 /* ---- Deep Space: coordinator quick-access enabled ---- */

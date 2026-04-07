@@ -427,21 +427,26 @@ const ProjectPanel: Component = () => {
                                 }
                               >
                                 {(s) => {
-                                  const patched = () => {
+                                  const repoName = () => replicaRepoName(item.replica);
+                                  const branchLabel = () => {
                                     const sess = s();
-                                    const repoName = replicaRepoName(item.replica);
-                                    if (sess.gitBranch && !sess.gitBranch.includes("/") && repoName) {
-                                      return { ...sess, gitBranch: `${repoName}/${sess.gitBranch}` };
+                                    const rn = repoName();
+                                    if (sess.gitBranch && rn) {
+                                      return sess.gitBranch.includes("/") ? sess.gitBranch : `${rn}/${sess.gitBranch}`;
                                     }
-                                    return sess;
+                                    return sess.gitBranch || null;
                                   };
+                                  const stripped = () => ({ ...s(), gitBranch: null as string | null });
                                   return (
                                     <div class="coord-quick-item coord-quick-item--session">
                                       <SessionItem
-                                        session={patched()}
+                                        session={stripped()}
                                         isActive={s().id === sessionsStore.activeId}
                                       />
                                       <div class="ac-discovery-badges">
+                                        <Show when={branchLabel()}>
+                                          <span class="ac-discovery-badge branch">{branchLabel()}</span>
+                                        </Show>
                                         <span class="ac-discovery-badge coord">coordinator</span>
                                         <span class="ac-discovery-badge team">{item.wg.name}</span>
                                       </div>
