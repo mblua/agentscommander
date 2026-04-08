@@ -550,18 +550,6 @@ impl MailboxPoller {
                     .map_err(|e| format!("PTY write failed for remote command: {}", e))?;
             }
 
-            // Record in transcript
-            {
-                let transcript = app.state::<crate::pty::transcript::TranscriptWriter>();
-                transcript.record_inject(
-                    session_id,
-                    cmd_bytes.as_bytes(),
-                    crate::pty::transcript::InjectReason::RemoteCommand,
-                    Some(msg.from.clone()),
-                    true,
-                );
-            }
-
             log::info!(
                 "Executed remote command '{}' on session {} (from: {})",
                 command, session_id, msg.from
@@ -642,7 +630,7 @@ impl MailboxPoller {
             "[mailbox] Injecting into PTY session={} msg={} payload_len={} first_100={:?}",
             session_id, msg.id, payload.len(), payload.chars().take(100).collect::<String>()
         );
-        crate::pty::inject::inject_text_into_session(app, session_id, &payload, true, crate::pty::transcript::InjectReason::MessageDelivery, Some(msg.from.clone())).await
+        crate::pty::inject::inject_text_into_session(app, session_id, &payload, true).await
             .map_err(|e| {
                 log::error!("[mailbox] PTY injection FAILED session={} msg={}: {}", session_id, msg.id, e);
                 e
@@ -715,8 +703,6 @@ impl MailboxPoller {
             session_id,
             &payload,
             true,
-            crate::pty::transcript::InjectReason::MessageDelivery,
-            Some(msg.from.clone()),
         ).await
     }
 
@@ -1346,7 +1332,7 @@ impl MailboxPoller {
             // SessionManager read-lock dropped here
         };
 
-        match crate::pty::inject::inject_text_into_session(app, session_id, &notice, false, crate::pty::transcript::InjectReason::TokenRefresh, None).await {
+        match crate::pty::inject::inject_text_into_session(app, session_id, &notice, false).await {
             Ok(()) => log::info!("[mailbox] Fresh token injected into session {}", session_id),
             Err(e) => log::warn!("[mailbox] Failed to inject fresh token into session {}: {}", session_id, e),
         }

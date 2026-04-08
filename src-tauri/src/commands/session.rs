@@ -211,8 +211,6 @@ pub async fn create_session_inner(
                 session_id,
                 &cred_block,
                 true,
-                crate::pty::transcript::InjectReason::TokenRefresh,
-                None,
             ).await {
                 Ok(()) => {
                     log::info!("[session] Credentials auto-injected for Claude session {}", session_id);

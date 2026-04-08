@@ -9,7 +9,6 @@ use uuid::Uuid;
 use crate::errors::AppError;
 use crate::pty::git_watcher::GitWatcher;
 use crate::pty::idle_detector::IdleDetector;
-use crate::pty::transcript::TranscriptWriter;
 use crate::telegram::manager::OutputSenderMap;
 
 struct PtyInstance {
@@ -42,7 +41,6 @@ pub struct PtyManager {
     ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
     /// VT100 screen state per session for replay to late-joining WS clients
     screen_parsers: Arc<Mutex<HashMap<Uuid, vt100::Parser>>>,
-    transcript: TranscriptWriter,
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -129,7 +127,6 @@ impl PtyManager {
         idle_detector: Arc<IdleDetector>,
         git_watcher: Arc<GitWatcher>,
         ws_broadcaster: Option<crate::web::broadcast::WsBroadcaster>,
-        transcript: TranscriptWriter,
     ) -> Self {
         Self {
             ptys: Arc::new(Mutex::new(HashMap::new())),
@@ -139,7 +136,6 @@ impl PtyManager {
             response_watchers: Arc::new(Mutex::new(HashMap::new())),
             ws_broadcaster,
             screen_parsers: Arc::new(Mutex::new(HashMap::new())),
-            transcript,
         }
     }
 
@@ -224,9 +220,6 @@ impl PtyManager {
             self.screen_parsers.lock().unwrap().insert(id, parser);
         }
 
-        // Register session for transcript recording (writes to {cwd}/.agentscommander/transcripts/)
-        self.transcript.register_session(id, cwd);
-
         // Spawn read loop that emits PTY output to the frontend,
         // feeds active Telegram bridges, WS clients, and scans for response markers
         let session_id_str = id.to_string();
@@ -235,7 +228,6 @@ impl PtyManager {
         let response_watchers = Arc::clone(&self.response_watchers);
         let ws_broadcaster = self.ws_broadcaster.clone();
         let screen_parsers = Arc::clone(&self.screen_parsers);
-        let transcript = self.transcript.clone();
         std::thread::spawn(move || {
             let mut buf = [0u8; 4096];
             loop {
@@ -243,9 +235,6 @@ impl PtyManager {
                     Ok(0) => break, // EOF
                     Ok(n) => {
                         let data = buf[..n].to_vec();
-
-                        // Record transcript (agent output)
-                        transcript.record_output(id, &data);
 
                         // Scan for response markers.
                         // Use from_utf8_lossy to prevent silent detection skips
@@ -376,7 +365,6 @@ impl PtyManager {
         ptys.remove(&id);
         self.idle_detector.remove_session(id);
         self.git_watcher.remove_session(id);
-        self.transcript.close_session(id);
 
         // Clean up any response watchers for this session
         if let Ok(mut watchers) = self.response_watchers.lock() {
