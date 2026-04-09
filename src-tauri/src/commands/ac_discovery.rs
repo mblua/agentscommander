@@ -764,6 +764,9 @@ pub async fn discover_project(
         });
     }
 
+    // Opportunistic: ensure gitignore protects workgroup clones
+    let _ = ensure_ac_new_gitignore(&ac_new_dir);
+
     let project_folder = base
         .file_name()
         .and_then(|n| n.to_str())
