@@ -163,14 +163,37 @@ pub async fn create_session_inner(
         .map_err(|e| e.to_string())?;
 
     // Auto-inject credentials for Claude sessions after PTY spawn.
-    // Wait 2s for Claude Code to boot, then inject the credential block once.
+    // Wait for Claude to become idle (ready for input) instead of fixed delay.
+    // Mirrors the pattern in mailbox.rs inject_followup_after_idle_static.
     if is_claude {
         let app_clone = app.clone();
         let session_id = id;
         let token = session.token.clone();
         let cwd_clone = cwd.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+            let max_wait = std::time::Duration::from_secs(30);
+            let poll = std::time::Duration::from_millis(500);
+            let start = std::time::Instant::now();
+
+            loop {
+                if start.elapsed() >= max_wait {
+                    log::warn!("[session] Timeout waiting for idle before credential injection for session {}", session_id);
+                    break; // inject anyway as fallback
+                }
+                tokio::time::sleep(poll).await;
+
+                let session_mgr = app_clone.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                let sessions = mgr.list_sessions().await;
+                match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                    Some(s) if s.waiting_for_input => break, // ready
+                    Some(_) => {} // still busy, keep polling
+                    None => {
+                        log::warn!("[session] Session {} gone before credential injection", session_id);
+                        return; // session destroyed, nothing to inject
+                    }
+                }
+            }
 
             let exe = std::env::current_exe().ok();
             let binary_name = exe.as_ref()
