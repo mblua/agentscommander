@@ -14,9 +14,9 @@ use crate::DetachedSessionsState;
 
 /// Core session creation logic shared by the Tauri command and the restore path.
 /// Creates a session record, spawns a PTY, and emits the session_created event.
-/// Auto-detects agent from shell command if not provided, and auto-injects --continue for Claude.
+/// Auto-detects agent from shell command if not provided, and auto-injects --continue
+/// for Claude when a prior conversation exists (~/.claude/projects/{mangled-cwd}/).
 /// If `skip_tooling_save` is true, skips writing to the repo's config.json (for temp sessions).
-/// If `is_restore` is true, this is a session restore (app restart) and --continue may be injected.
 pub async fn create_session_inner(
     app: &AppHandle,
     session_mgr: &Arc<tokio::sync::RwLock<SessionManager>>,
@@ -28,7 +28,6 @@ pub async fn create_session_inner(
     agent_id: Option<String>,
     agent_label: Option<String>,
     skip_tooling_save: bool,
-    is_restore: bool,
     git_branch_source: Option<String>,
     git_branch_prefix: Option<String>,
 ) -> Result<SessionInfo, String> {
@@ -63,7 +62,7 @@ pub async fn create_session_inner(
     let is_claude = cmd_basenames.iter().any(|b| b == "claude");
     let is_codex = cmd_basenames.iter().any(|b| b == "codex");
 
-    // Auto-inject --continue for Claude agents only on session restore (app restart)
+    // Auto-inject --continue for Claude agents when a prior conversation exists
     // Only if ~/.claude/projects/{mangled-cwd}/ exists (prior conversation exists)
     let claude_project_exists = {
         if let Some(home) = dirs::home_dir() {
@@ -75,7 +74,7 @@ pub async fn create_session_inner(
             false
         }
     };
-    if is_claude && is_restore && claude_project_exists {
+    if is_claude && claude_project_exists {
         if let Some(ref aid) = agent_id {
             let already_has_continue = full_cmd.split_whitespace().any(|t| {
                 let lower = t.to_lowercase();
@@ -86,12 +85,12 @@ pub async fn create_session_inner(
                     if let Some(last) = shell_args.last_mut() {
                         if executable_basename(last) == "claude" || last.to_lowercase().contains("claude") {
                             *last = format!("{} --continue", last);
-                            log::info!("Auto-injected --continue for agent '{}' (restore, cmd path)", aid);
+                            log::info!("Auto-injected --continue for agent '{}' (prior conversation exists, cmd path)", aid);
                         }
                     }
                 } else {
                     shell_args.push("--continue".to_string());
-                    log::info!("Auto-injected --continue for agent '{}' (restore)", aid);
+                    log::info!("Auto-injected --continue for agent '{}' (prior conversation exists)", aid);
                 }
             }
         }
@@ -172,14 +171,37 @@ pub async fn create_session_inner(
         .map_err(|e| e.to_string())?;
 
     // Auto-inject credentials for Claude sessions after PTY spawn.
-    // Wait 2s for Claude Code to boot, then inject the credential block once.
+    // Wait for Claude to become idle (ready for input) instead of fixed delay.
+    // Mirrors the pattern in mailbox.rs inject_followup_after_idle_static.
     if is_claude {
         let app_clone = app.clone();
         let session_id = id;
         let token = session.token.clone();
         let cwd_clone = cwd.clone();
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_millis(2000)).await;
+            let max_wait = std::time::Duration::from_secs(30);
+            let poll = std::time::Duration::from_millis(500);
+            let start = std::time::Instant::now();
+
+            loop {
+                if start.elapsed() >= max_wait {
+                    log::warn!("[session] Timeout waiting for idle before credential injection for session {}", session_id);
+                    break; // inject anyway as fallback
+                }
+                tokio::time::sleep(poll).await;
+
+                let session_mgr = app_clone.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                let sessions = mgr.list_sessions().await;
+                match sessions.iter().find(|s| s.id == session_id.to_string()) {
+                    Some(s) if s.waiting_for_input => break, // ready
+                    Some(_) => {} // still busy, keep polling
+                    None => {
+                        log::warn!("[session] Session {} gone before credential injection", session_id);
+                        return; // session destroyed, nothing to inject
+                    }
+                }
+            }
 
             let exe = std::env::current_exe().ok();
             let binary_name = exe.as_ref()
@@ -338,7 +360,6 @@ pub async fn create_session(
         agent_id,
         agent_label,
         false, // persist tooling
-        false, // not a restore
         git_branch_source,
         git_branch_prefix,
     )
@@ -662,7 +683,6 @@ pub async fn create_root_agent_session(
         Some("Root Agent".to_string()),
         agent_id,
         agent_label,
-        false,
         false,
         None,
         None,
