@@ -7,8 +7,8 @@ use super::settings::AgentConfig;
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectSettings {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub agents: Option<Vec<AgentConfig>>,
+    #[serde(default)]
+    pub agents: Vec<AgentConfig>,
 }
 
 /// Returns the path to `<project>/.ac-new/project-settings.json`.
@@ -89,7 +89,10 @@ pub fn save_project_settings(
 /// Delete `<project>/.ac-new/project-settings.json`, reverting to global agents.
 /// Idempotent: succeeds even if the file doesn't exist.
 pub fn delete_project_settings(project_path: &str) -> Result<(), String> {
-    let path = validated_settings_path(project_path)?;
+    let path = match validated_settings_path(project_path) {
+        Ok(p) => p,
+        Err(_) => return Ok(()),
+    };
 
     match std::fs::remove_file(&path) {
         Ok(()) => {
