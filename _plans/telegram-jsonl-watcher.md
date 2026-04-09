@@ -675,3 +675,284 @@ Based on the dependency graph, I recommend this build order:
 10. **Register module in `telegram/mod.rs`**
 
 Each step should compile independently. Steps 1-5 can be done as a preparatory commit before the main feature commit (6-10).
+
+---
+
+## Grinch Review
+
+**Author:** Dev-Rust-Grinch Agent
+**Date:** 2026-04-09
+
+I reviewed the full plan (requirement + architect design + dev-rust review) AND read all referenced source files (`bridge.rs`, `manager.rs`, `session/session.rs`, `commands/session.rs`, `commands/telegram.rs`, `telegram/types.rs`, `telegram/api.rs`). Below are problems that the previous reviews missed or insufficiently addressed. Severity ratings reflect production impact likelihood.
+
+---
+
+### G1. HIGH — No Final Flush on Cancel (Buffer Content Silently Lost)
+
+The existing `output_task` (bridge.rs:556-574) has explicit **final harvest + final flush** logic after the main loop breaks:
+
+```rust
+// Final harvest + flush
+if tracker.has_pending() {
+    tokio::time::sleep(Duration::from_millis(STABILIZATION_MS + 100)).await;
+    let stable_lines = tracker.harvest_stable(filter.as_ref());
+    // ... accumulate to buffer
+}
+if !buffer.is_empty() {
+    flush_buffer(&mut buffer, ...).await;
+}
+```
+
+The architect's `watch_loop` design does NOT include any post-loop flush. When `cancel.cancelled()` fires (bridge detach or app exit), the loop breaks immediately and any content sitting in `buffer` is discarded.
+
+**Production scenario:** Claude finishes writing a response → JSONL line is parsed and buffered → user detaches bridge within the 500ms flush window → last message never reaches Telegram. This will happen frequently because detach typically follows "I see Claude finished."
+
+**Fix:** Add post-loop final poll + flush after the `loop { ... }` block:
+
+```rust
+// After loop breaks:
+// One final read in case content arrived between last tick and cancel
+if let Some(ref path) = current_file {
+    if let Ok(new_lines) = read_new_lines(path, &mut file_offset, &mut line_remainder) {
+        for line in new_lines {
+            if let Some(text) = extract_assistant_text(&line) {
+                buffer.push_str(&text);
+                buffer.push('\n');
+            }
+        }
+    }
+}
+if !buffer.is_empty() {
+    flush_buffer(&mut buffer, &client, &token, chat_id,
+        &session_id, &app, &mut logger, &mut diag).await;
+}
+```
+
+---
+
+### G2. HIGH — Offset Tracking Bug: `*offset = file_len` Can Skip Data
+
+The dev-rust review (#3) recommends this `read_new_lines` pattern:
+
+```rust
+let file_len = file.metadata()?.len();
+if file_len <= *offset { return Ok(vec![]); }
+file.seek(SeekFrom::Start(*offset))?;
+let mut buf = String::new();
+file.read_to_string(&mut buf)?;
+*offset = file_len;       // ← BUG
+```
+
+Setting `*offset = file_len` assumes `buf.len() == file_len - *offset`. This is NOT guaranteed:
+
+1. **File grows during read:** `read_to_string` reads until actual EOF (which may be beyond `file_len` if Claude wrote more data between the `metadata()` call and the `read`). Setting `offset = file_len` means next poll re-reads those extra bytes → **duplicate messages to Telegram**.
+
+2. **Buffered writes on Windows:** NTFS can report `metadata().len()` reflecting unflushed write buffers. If the OS reports a larger size than what's actually readable at that instant, `read_to_string` returns fewer bytes than `file_len - offset`. Setting `offset = file_len` → **skipped data**.
+
+**Fix:** Track offset by actual bytes read, not reported file length:
+
+```rust
+*offset += buf.len() as u64;
+```
+
+This is always correct regardless of filesystem timing quirks.
+
+---
+
+### G3. HIGH — File Truncation/Shrink Not Handled (Watcher Gets Stuck)
+
+The architect's design only handles two cases: `current_file == None` (first attach) and `latest != current_file` (file rotation by name change). A third case is missed:
+
+**Same filename, smaller file.** If Claude Code deletes and recreates a session file with the same name, or if the file is truncated (crash recovery, manual cleanup), the file path stays the same but the file length drops below `offset`. The `file_len <= *offset` check in `read_new_lines` returns early with no new lines — forever. The watcher appears alive but never produces output.
+
+**Fix:** Detect shrink and reset:
+
+```rust
+if file_len < *offset {
+    // File was truncated or replaced — reset to beginning
+    log::warn!("[JSONL_TRUNCATE] File shrank ({} < {}), resetting offset", file_len, *offset);
+    *offset = 0;
+    remainder.clear();
+}
+```
+
+---
+
+### G4. HIGH — `thinking` Blocks Not Filtered (Telegram Spam)
+
+The JSONL parsing table (Section "JSONL Parsing Details") only mentions filtering `tool_use` and `tool_result` from the content array. Claude Code's assistant messages also include `{type: "thinking", thinking: "..."}` blocks in `message.content`.
+
+These blocks contain the model's internal chain-of-thought reasoning. They are:
+- **Enormous** — frequently 5-20KB of dense text per message
+- **Not user-facing** — Claude Code collapses these in its own UI
+- **Potentially sensitive** — raw reasoning may include discarded approaches, security considerations, or confused intermediate logic
+
+If not filtered, every Claude response sends the full thinking block to Telegram first, followed by the actual response. A 15KB thinking block becomes 4 Telegram messages of internal monologue before the 200-byte actual answer.
+
+**Fix:** Add `thinking` to the filtered block types in `extract_assistant_text`:
+
+```rust
+// Skip non-text content blocks
+if block_type != "text" {
+    continue; // Filters: tool_use, tool_result, thinking, and any future block types
+}
+```
+
+Using a whitelist (`== "text"`) instead of a blacklist is safer — it automatically filters any new block types Claude adds in the future.
+
+---
+
+### G5. MEDIUM — No `telegram_bridge_error` Events (Silent Failures for the UI)
+
+The existing `output_task` emits `telegram_bridge_error` events when Telegram sends fail (bridge.rs:614-620). The frontend uses these to show error indicators in the UI.
+
+The architect's JSONL watcher design mentions logging (JSONL_ERR, etc.) but does NOT mention emitting `telegram_bridge_error` events. If the JSONL file can't be read, or Telegram sends fail from the watcher, the UI will show the bridge as "Active" with no error indication. The user won't know output has stopped.
+
+**Fix:** The JSONL watcher should emit the same events as `output_task`. Since `flush_buffer` already handles Telegram send errors with event emission, the main gap is file I/O errors. Add event emission when:
+- `File::open()` fails (permission error, file locked)
+- `read_to_string()` fails (invalid UTF-8, I/O error)
+- Project directory doesn't exist after extended period (>30s of polling with no directory)
+
+---
+
+### G6. MEDIUM — Memory Spikes on Large JSONL Lines
+
+`extract_assistant_text` parses each line with `serde_json::from_str::<Value>(line)`. This builds a full DOM tree in memory. JSONL lines vary wildly in size:
+
+- `permission-mode` entries: ~100 bytes
+- `user` messages: 100 bytes - 10KB
+- `assistant` messages: 200 bytes - 50KB
+- **`tool_result` entries: can be 1-10MB** (contain full file contents from Read/Grep tool calls, base64 images, large command outputs)
+
+A 5MB `tool_result` line → ~15MB serde_json::Value DOM allocation → parsed → found to be non-assistant → immediately dropped. This creates a memory spike every time Claude reads a large file.
+
+**Mitigation options (pick one):**
+- **(A) Pre-filter by line prefix** — Before parsing JSON, check if the line contains `"type":"assistant"` or `"type": "assistant"` with a simple string search. Skip parsing entirely if not found. ~95% of lines are filtered without allocation.
+- **(B) Use `serde_json::from_str::<RawValue>`** and only parse the `type` field first, then parse the full value only for assistant messages.
+
+**Recommendation: Option A** — simplest, zero dependencies, handles the 99% case. A `tool_result` line will never contain `"type":"assistant"` or `"type": "assistant"` as a substring.
+
+```rust
+fn extract_assistant_text(line: &str) -> Option<String> {
+    // Fast-path: skip lines that can't be assistant messages
+    if !line.contains("\"type\":\"assistant\"") && !line.contains("\"type\": \"assistant\"") {
+        return None;
+    }
+    // Full parse only for candidate lines
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    // ... extract text content
+}
+```
+
+---
+
+### G7. MEDIUM — Panicked Watcher Task = Silently Dead Bridge
+
+If `spawn_watch_task` panics at runtime (malformed JSON hitting an `unwrap`, integer overflow, etc.), the tokio task dies silently. The `CancellationToken` is never cancelled. The `BridgeHandle` remains in `TelegramBridgeManager::bridges` with status `Active`. The UI shows an active bridge, but no output reaches Telegram.
+
+This is the same problem the existing `output_task` has — neither stores JoinHandles. But the JSONL watcher introduces new code paths (file I/O, JSON parsing) with more surface area for panics than the well-tested PTY pipeline.
+
+**Fix:** Wrap the watch loop in `catch_unwind` or, better, use a `tokio::spawn` wrapper that logs panics and emits a `telegram_bridge_error` event:
+
+```rust
+pub fn spawn_watch_task(...) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        watch_loop(...).await;
+        // If we get here normally (cancel), fine.
+        // If the task panicked, tokio::spawn catches it.
+        // Log either way:
+        log::info!("[JSONL_EXIT] Watcher task ended for session {}", session_id);
+    })
+}
+```
+
+And in the caller, optionally monitor the JoinHandle for panic:
+
+```rust
+let handle = spawn_watch_task(...);
+tokio::spawn(async move {
+    if let Err(e) = handle.await {
+        log::error!("[JSONL_PANIC] Watcher panicked: {:?}", e);
+        app.emit("telegram_bridge_error", ...);
+    }
+});
+```
+
+This is a **defense-in-depth** measure. The primary fix is to ensure no `unwrap()`s exist in the watcher code.
+
+---
+
+### G8. MEDIUM — `flush_buffer` Line Dedup Strips Legitimate Repeated Content
+
+`flush_buffer` (bridge.rs:591-600) deduplicates consecutive identical lines:
+
+```rust
+if lines.last().map(|l: &&str| l.trim()) != Some(trimmed) {
+    lines.push(line);
+}
+```
+
+In the PTY pipeline, this is valuable — screen redraws cause duplicate rows. But in JSONL mode, the text is Claude's actual response content. Legitimate repeated lines (code examples with identical lines, numbered lists, ASCII art, table rows) will be silently stripped.
+
+**Example that breaks:**
+
+```
+def func_a():
+    pass
+
+def func_b():
+    pass
+```
+
+The two `    pass` lines are consecutive and identical → second one is stripped → Telegram receives syntactically broken Python.
+
+**Fix:** Either:
+- **(A)** Skip the dedup logic in JSONL mode (add a `dedup: bool` parameter to `flush_buffer`), or
+- **(B)** Remove the dedup logic entirely from `flush_buffer` and add it only in the PTY pipeline's buffer accumulation step (where it belongs — PTY screen redraws are the source of duplicates, not the send pipeline)
+
+**Recommendation: Option A** — least invasive.
+
+---
+
+### G9. LOW — `result` Type JSONL Entries Not Documented
+
+The JSONL parsing table lists: `user`, `assistant`, `permission-mode`, `summary`. Claude Code also writes entries with `type: "result"` that contain the final result metadata for the conversation turn. These include a `result` field (not `message`), and the existing extract logic will correctly return `None` for them (no `message.content` path). But they should be explicitly documented in the parsing table so implementers don't wonder if they're missing content.
+
+Additionally, Claude Code may write `type: "system"` entries for system prompts. These should also be explicitly listed as SKIP in the table.
+
+Updated table:
+
+| type | action |
+|------|--------|
+| `"user"` | SKIP (v1) |
+| `"assistant"` | EXTRACT text blocks from `message.content` |
+| `"permission-mode"` | SKIP |
+| `"summary"` | SKIP |
+| `"result"` | SKIP (metadata, no user-facing content) |
+| `"system"` | SKIP (system prompt) |
+| unknown | SKIP (future-proof) |
+
+---
+
+### G10. LOW — TOCTOU in `find_latest_jsonl` + `read_new_lines`
+
+`find_latest_jsonl` reads the directory listing and selects the most recent `.jsonl` file. Then `read_new_lines` opens that file. Between these two calls, the file could be deleted (if Claude Code session cleanup runs). The `File::open()` would fail with `NotFound`.
+
+This is already handled gracefully if `read_new_lines` returns `Err` and the watcher skips the poll cycle (as dev-rust suggested in #8). But worth confirming the implementer doesn't `unwrap()` the `File::open()` result.
+
+---
+
+### Summary Table
+
+| # | Severity | Issue | Who Missed It |
+|---|----------|-------|---------------|
+| G1 | HIGH | No final flush on cancel — buffer content lost | Architect |
+| G2 | HIGH | Offset = file_len skips data on race | Dev-Rust (introduced in their own fix) |
+| G3 | HIGH | File truncation → watcher stuck forever | Architect + Dev-Rust |
+| G4 | HIGH | `thinking` blocks flood Telegram (5-20KB per message) | Architect + Dev-Rust |
+| G5 | MEDIUM | No `telegram_bridge_error` events from JSONL path | Architect + Dev-Rust |
+| G6 | MEDIUM | serde_json::Value DOM spike on multi-MB lines | Architect + Dev-Rust |
+| G7 | MEDIUM | Panicked watcher = silently dead bridge | Architect + Dev-Rust |
+| G8 | MEDIUM | `flush_buffer` dedup strips legitimate repeated lines | Architect + Dev-Rust |
+| G9 | LOW | `result`/`system` JSONL types undocumented | Architect |
+| G10 | LOW | TOCTOU between find_latest and open | Everyone (minor) |
