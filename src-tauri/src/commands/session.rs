@@ -65,10 +65,12 @@ pub async fn create_session_inner(
     let is_claude = cmd_basenames.iter().any(|b| b == "claude");
     let is_codex = cmd_basenames.iter().any(|b| b == "codex");
 
-    // Persist is_claude flag in the SessionManager so the bridge can read it later
+    // Persist is_claude flag in the SessionManager AND the local clone.
+    // The manager update ensures get_session() returns the correct flag (for telegram_attach).
+    // The local clone update ensures SessionInfo.is_claude is correct (for auto-attach sites).
     if is_claude {
-        let mgr = session_mgr.read().await;
         mgr.set_is_claude(id, true).await;
+        session.is_claude = true;
     }
 
     // Auto-inject --continue for Claude agents when a prior conversation exists
