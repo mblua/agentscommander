@@ -1,8 +1,8 @@
 # Plan: Fix workgroup clone missing .git/index
 
 **Branch:** `fix/workgroup-clone-missing-index`
-**File:** `src-tauri/src/commands/entity_creation.rs`
-**Function:** `git_clone_async()` (lines 1205-1235)
+**Primary file:** `src-tauri/src/commands/ac_discovery.rs`
+**Secondary file:** `src-tauri/src/commands/entity_creation.rs`
 
 ---
 
@@ -14,65 +14,173 @@
 - `git ls-tree HEAD` shows all 7,548 files correctly (object database intact)
 - `git status` shows 7,548 staged deletions
 - `git reflog` shows only `clone: from <url>` — no post-clone operations
-- Exit code was 0 (function returned `Ok(())`)
 
-### What this tells us
-Git clone has two phases: **(a) fetch objects** and **(b) checkout working tree**. Phase (a) completed perfectly (objects, refs, HEAD all present). Phase (b) never executed or silently failed — no index was written, no files were checked out, yet git reported success (exit code 0).
+### Actual root cause: Parent repo tracking child clones
 
-### Probable causes (ordered by likelihood)
+When a project folder is itself a git repo, and AgentsCommander creates `.ac-new/wg-*/repo-*` inside it, the **parent repo tracks those cloned repo files**. Parent git operations (`checkout`, `reset`, `clean`) then corrupt the child clones — deleting working tree files and the index.
 
-1. **`CREATE_NO_WINDOW` + console I/O conflict (HIGH)**
-   On Windows, `CREATE_NO_WINDOW` (0x08000000) prevents a console from being allocated. Git's checkout phase on Windows can use console handles for progress display and CTRL+C handling. Without a console, the checkout phase may fail silently while the fetch phase (which uses network I/O, not console I/O) succeeds. Other `CREATE_NO_WINDOW` usages in this codebase (`git status`, `git log`, `git rev-parse`) are read-only operations that don't have this issue.
+**Evidence:** The affected project (`phi_phibridge`) has NO `.gitignore` entry for `.ac-new/`, and `git status` at the project root shows 138 changes tracked inside `.ac-new/`. Any parent-level `git checkout` or `git reset` wipes the child repo's working tree and index because git treats those files as part of the parent.
 
-2. **Antivirus file locking during checkout (MEDIUM)**
-   Windows Defender real-time scanning locks newly created files. For a 7,548-file checkout, index creation could fail if the AV holds a lock on `.git/index` during writes. This is intermittent and machine-dependent.
-
-3. **Shallow clone edge case (LOW)**
-   `--depth 1` creates a shallow clone with a single commit. Some git versions have had bugs where shallow clones on Windows skip checkout under specific conditions. Less likely since `--depth 1` is widely used.
-
-4. **Long path exceeding MAX_PATH (LOW)**
-   Workgroup paths are deep (`.ac-new/wg-N-team/repo-Name/...`). If any checked-out file exceeds 260 chars, git might abort checkout. However, this would typically produce an error, not a silent skip of ALL files.
-
-### Investigation approach in the fix
-Add detailed logging of git's stderr after clone to capture any checkout warnings that are currently discarded. Log the exit code explicitly. This data will confirm the cause definitively.
+### Why the clone itself succeeds
+The `git clone --depth 1` in `git_clone_async()` works correctly. The repo is fully checked out immediately after clone. The corruption happens **later**, when the parent repo's git operations interfere with the child clone's files.
 
 ---
 
-## 2. Fix Approach for `git_clone_async()`
+## 2. Primary Fix: Ensure `.ac-new/.gitignore` excludes workgroup directories
 
-### 2a. Capture and log stderr even on success
+### Strategy
+Every time AgentsCommander creates or opens a project's `.ac-new/` directory, ensure a `.gitignore` file exists inside it that excludes workgroup directories from parent repo tracking.
 
-Currently, stderr is only examined on failure. Git writes checkout warnings and progress to stderr. We need this data to diagnose silent failures.
+### Why `.ac-new/.gitignore` and not project root `.gitignore`?
+- We must NOT modify the user's project root `.gitignore` — that's their file, committed to their repo
+- Git respects `.gitignore` files in subdirectories — a `.gitignore` inside `.ac-new/` applies to that subtree
+- This is self-contained: all AC artifacts stay within `.ac-new/`
 
-**Change:** After a successful clone, log stderr at `info` level (or `warn` if non-empty). Cap at 1024 bytes to avoid log bloat.
+### The gitignore content
 
-### 2b. Add post-clone validation
+```gitignore
+# AgentsCommander: exclude workgroup cloned repos from parent git tracking.
+# Without this, parent repo operations (checkout, reset) corrupt child clones.
+wg-*/
+```
 
-After `git clone` returns success, validate the result before returning `Ok(())`:
+### Entry points that need the check
+
+There are **two Tauri commands** that create the `.ac-new/` directory, plus one that operates inside it:
+
+| Command | File | Line | When called |
+|---|---|---|---|
+| `create_ac_project(path)` | `ac_discovery.rs` | 699 | User clicks "New Project" (creates `.ac-new/` from scratch) |
+| `create_workgroup(project_path, team_name)` | `entity_creation.rs` | 420 | User creates a workgroup (`.ac-new/` already exists) |
+
+Additionally, `discover_project()` and `discover_ac_agents()` are read-only discovery commands called on "Open Project" — they scan `.ac-new/` but don't create it. However, `discover_ac_agents()` runs on app startup for all configured repo_paths, making it a good opportunistic repair point.
+
+### Implementation: helper function `ensure_ac_new_gitignore()`
+
+Create a shared helper that both entry points call:
 
 ```rust
-// After successful clone, validate working tree
-let git_dir = target.join(".git");
-let index_path = git_dir.join("index");
+/// Ensure .ac-new/.gitignore exists and contains the wg-*/ exclusion pattern.
+/// This prevents parent repo operations from corrupting cloned repos inside workgroups.
+fn ensure_ac_new_gitignore(ac_new_dir: &Path) -> Result<(), String> {
+    let gitignore_path = ac_new_dir.join(".gitignore");
+    let required_pattern = "wg-*/";
 
-if !index_path.exists() {
-    log::warn!("[git_clone_async] Clone succeeded but .git/index missing — running recovery checkout");
-    // Recovery: run git checkout
-    run_git_checkout_recovery(target).await?;
-}
+    if gitignore_path.exists() {
+        // Read existing content, check if pattern is present
+        let content = std::fs::read_to_string(&gitignore_path)
+            .map_err(|e| format!("Failed to read .ac-new/.gitignore: {}", e))?;
 
-// Final validation: index must exist
-if !index_path.exists() {
-    return Err(format!(
-        "git clone produced incomplete repo at {}: .git/index missing after recovery attempt",
-        target.display()
-    ));
+        if !content.lines().any(|line| line.trim() == required_pattern) {
+            // Append the pattern
+            let separator = if content.ends_with('\n') { "" } else { "\n" };
+            let addition = format!(
+                "{}# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\n{}\n",
+                separator, required_pattern
+            );
+            std::fs::write(&gitignore_path, format!("{}{}", content, addition))
+                .map_err(|e| format!("Failed to update .ac-new/.gitignore: {}", e))?;
+        }
+    } else {
+        // Create new .gitignore
+        let content = format!(
+            "# AgentsCommander: exclude workgroup cloned repos from parent git tracking.\n# Without this, parent repo operations (checkout, reset) corrupt child clones.\n{}\n",
+            required_pattern
+        );
+        std::fs::write(&gitignore_path, content)
+            .map_err(|e| format!("Failed to create .ac-new/.gitignore: {}", e))?;
+    }
+
+    Ok(())
 }
 ```
 
-### 2c. Recovery function: `run_git_checkout_recovery()`
+### Insertion points
 
-New async helper that runs `git checkout HEAD -- .` inside the cloned repo to regenerate the index and working tree from the object database:
+#### A. `create_ac_project()` in `ac_discovery.rs` (line 699)
+
+After creating `.ac-new/` directory (line 701), call:
+```rust
+ensure_ac_new_gitignore(&ac_new)?;
+```
+
+This is the "New Project" path — the most critical entry point since it's where `.ac-new/` is first created.
+
+#### B. `create_workgroup()` in `entity_creation.rs` (line 420)
+
+After validating `.ac-new/` exists (line 426-428), before cloning repos, call:
+```rust
+ensure_ac_new_gitignore(&base)?;
+```
+
+This catches the case where `.ac-new/` was created before the fix was deployed. Every new workgroup creation repairs the gitignore.
+
+#### C. `discover_ac_agents()` in `ac_discovery.rs` (line 415) — opportunistic repair
+
+Inside the loop that scans repo_paths (around line 448), after confirming `.ac-new/` exists:
+```rust
+if ac_new_dir.is_dir() {
+    // Opportunistic: ensure gitignore exists for existing projects
+    let _ = ensure_ac_new_gitignore(&ac_new_dir);  // Ignore errors — discovery is read-only
+    // ... existing discovery logic
+}
+```
+
+This heals ALL existing projects on next app startup, silently. The `let _ =` is intentional — discovery should not fail just because gitignore repair fails.
+
+### Where to put the helper function
+
+Since it's used by both `ac_discovery.rs` and `entity_creation.rs`, place it in a shared location. Options:
+
+- **Option 1 (simplest):** Define it in `ac_discovery.rs` and make it `pub(crate)`, import from `entity_creation.rs`
+- **Option 2:** Define it as a standalone function in a shared utils module
+
+Recommendation: **Option 1** — the function is small and `ac_discovery.rs` is the natural home since it owns `.ac-new/` lifecycle.
+
+---
+
+## 3. Defensive Layer: Post-clone validation in `git_clone_async()`
+
+This is retained from the original plan as a **secondary defense**. Even with the gitignore fix, defensive validation prevents silent failures from any cause.
+
+### Changes to `git_clone_async()` (entity_creation.rs, lines 1205-1235)
+
+#### 3a. Log stderr even on success
+
+After a successful clone, log stderr for diagnostics:
+
+```rust
+let stderr = String::from_utf8_lossy(&output.stderr);
+if !stderr.trim().is_empty() {
+    let capped = &stderr[..stderr.len().min(512)];
+    log::info!("[git_clone_async] stderr for {}: {}", target.display(), capped);
+}
+```
+
+#### 3b. Post-clone index validation
+
+After clone reports success, verify the index exists:
+
+```rust
+let index_path = target.join(".git").join("index");
+if !index_path.exists() {
+    log::warn!(
+        "[git_clone_async] Clone succeeded but .git/index missing at {} — running recovery",
+        target.display()
+    );
+    run_git_checkout_recovery(target).await?;
+
+    // Final check
+    if !index_path.exists() {
+        return Err(format!(
+            "git clone produced incomplete repo at {}: .git/index missing after recovery",
+            target.display()
+        ));
+    }
+}
+```
+
+#### 3c. Recovery function
 
 ```rust
 async fn run_git_checkout_recovery(repo_path: &Path) -> Result<(), String> {
@@ -80,11 +188,9 @@ async fn run_git_checkout_recovery(repo_path: &Path) -> Result<(), String> {
     cmd.args(["checkout", "HEAD", "--", "."])
         .current_dir(repo_path);
 
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
+    // NOTE: intentionally NOT using CREATE_NO_WINDOW here.
+    // If the original checkout failed due to console handle issues,
+    // using the same flag would cause recovery to fail too.
 
     let output = cmd
         .output()
@@ -101,187 +207,120 @@ async fn run_git_checkout_recovery(repo_path: &Path) -> Result<(), String> {
 }
 ```
 
-**Why `git checkout HEAD -- .` instead of `git reset --hard`?**
-- `git checkout HEAD -- .` regenerates the index AND working tree from the HEAD commit
-- `git reset --hard` also works but moves the branch ref — unnecessary since HEAD is already correct
-- Both are destructive to working tree (acceptable here since this is a fresh clone)
-
-### 2d. Enhanced stderr capture
-
-Replace the current `cmd.output()` with explicit pipe setup to ensure we capture stderr fully, even on success:
-
-```rust
-let output = cmd
-    .stdout(std::process::Stdio::piped())
-    .stderr(std::process::Stdio::piped())
-    .output()
-    .await
-    .map_err(|e| format!("Failed to spawn git clone: {}", e))?;
-
-// Log stderr regardless of exit code (git writes progress + warnings there)
-let stderr = String::from_utf8_lossy(&output.stderr);
-if !stderr.trim().is_empty() {
-    log::info!("[git_clone_async] git clone stderr for {}: {}", target.display(), &stderr[..stderr.len().min(1024)]);
-}
-```
-
 ---
 
-## 3. Post-Clone Validation Logic
+## 4. Testing Strategy
 
-The validation runs **inside `git_clone_async()`** after a successful clone, so the caller (`create_workgroup`) doesn't need changes.
+### 4a. Primary fix verification
 
-### Validation checklist (sequential):
+1. **New project on a git repo:** Create a new project via the UI on a folder that is a git repo. Verify:
+   - `.ac-new/.gitignore` exists
+   - Contains `wg-*/` pattern
+   - `git status` at project root does NOT show `.ac-new/wg-*` entries after creating a workgroup
 
-| Check | How | On failure |
-|---|---|---|
-| `.git/index` exists | `target.join(".git/index").exists()` | Run recovery checkout |
-| Working tree has files | `std::fs::read_dir(target)` has >1 entry (`.git` + at least one file) | Run recovery checkout |
-| Recovery index exists | `target.join(".git/index").exists()` after recovery | Return `Err()` — hard failure |
+2. **Existing project without gitignore:** Open a project that already has `.ac-new/` but no `.gitignore`. Verify:
+   - On app startup (via `discover_ac_agents`), `.ac-new/.gitignore` is created
+   - Subsequent parent git operations do not corrupt child clones
 
-### Why not check `git status --porcelain`?
-Running `git status` on a repo with 7,548 deleted files is expensive. File existence checks are O(1) and sufficient to detect this specific failure mode.
+3. **Existing project with gitignore but missing pattern:** Manually create `.ac-new/.gitignore` with other content. Verify the `wg-*/` pattern is appended without losing existing content.
 
----
+4. **Idempotency:** Run the same operations multiple times. Verify the pattern is NOT duplicated in `.gitignore`.
 
-## 4. Recovery Command for Already-Affected Repos
+### 4b. Defensive layer verification
 
-### Do we need a separate Tauri command?
+1. **Normal clone:** Create a workgroup. Check logs for stderr output. Verify no recovery was triggered.
+2. **Forced failure:** Temporarily delete `.git/index` after clone in code, verify recovery triggers and succeeds.
 
-**Yes.** Existing workgroups with broken repos need a repair mechanism without re-cloning. Two options:
-
-### Option A: Targeted repair command (RECOMMENDED)
-
-Add a new Tauri command `repair_workgroup_repos` that:
-1. Scans all `repo-*` dirs in a workgroup
-2. For each: checks if `.git/index` exists
-3. If missing: runs `git checkout HEAD -- .`
-4. Returns a list of repaired repos and any failures
-
-```rust
-#[tauri::command]
-pub async fn repair_workgroup_repos(wg_path: String) -> Result<Vec<RepairResult>, String> {
-    // ... scan and repair logic
-}
-```
-
-### Option B: Manual instruction
-
-Document that affected repos can be fixed with:
-```bash
-cd <repo-path>
-git checkout HEAD -- .
-```
-
-### Recommendation: **Option A** — it integrates with the UI and can be triggered from the workgroup context menu. But Option B costs zero dev time if urgency is high.
-
----
-
-## 5. Testing Strategy
-
-### 5a. Unit validation (Rust)
-
-The fix is in async code calling external processes — traditional unit tests are impractical. Instead:
-
-1. **Manual test:** Create a workgroup via the UI, verify:
-   - `.git/index` exists in every `repo-*` dir
-   - `git status` in each repo shows clean working tree
-   - Files are present on disk
-
-2. **Forced failure test:** Temporarily add code to delete `.git/index` after clone and verify the recovery path triggers and succeeds.
-
-### 5b. Log verification
-
-After the fix, create a workgroup and check Tauri logs for:
-- `[git_clone_async] git clone stderr for ...` — shows what git reported
-- No `[git_clone_async] Clone succeeded but .git/index missing` — if this appears, recovery triggered (which means the root cause is still present but now handled)
-
-### 5c. Edge cases to verify
+### 4c. Edge cases
 
 | Scenario | Expected |
 |---|---|
-| Normal clone (happy path) | Index exists, no recovery triggered, clean working tree |
-| Clone of large repo (~8k files) | Same as above, recovery not needed |
-| Clone with long workgroup path | Works or produces clear error |
-| Network failure during clone | Returns `Err()` as before (no behavior change) |
-| Recovery checkout fails | Returns `Err()` with clear message including path |
-
-### 5d. Regression check
-
-The existing `check_workgroup_repos_dirty()` function (lines 1015-1103) already runs `git status --porcelain` on repo-* dirs. After the fix, these should all show clean status for freshly cloned repos.
+| Project folder is NOT a git repo | Gitignore still created (harmless, and protects if user later does `git init`) |
+| `.ac-new/.gitignore` is read-only | Error logged but operation continues (graceful degradation) |
+| Workgroup created before fix deployed | Healed on next app startup via `discover_ac_agents` |
+| Multiple workgroups created in sequence | Gitignore check runs once per `create_workgroup` call, idempotent |
 
 ---
 
-## 6. Implementation Sequence
+## 5. Implementation Sequence
 
-1. **Modify `git_clone_async()`**: Add stderr logging on success
-2. **Add `run_git_checkout_recovery()`**: New helper function
-3. **Add post-clone validation**: Index existence check + recovery trigger
-4. **Add `repair_workgroup_repos` command**: For already-affected repos (can be Phase 2 if needed)
-5. **Register new command**: In Tauri command handlers if repair command is added
-6. **Test**: Create workgroup, verify logs and repo state
-7. **Verify**: No regression on clean clone path
+1. **Create `ensure_ac_new_gitignore()` helper** in `ac_discovery.rs` as `pub(crate)`
+2. **Call from `create_ac_project()`** — after `create_dir_all` (ac_discovery.rs:701)
+3. **Call from `create_workgroup()`** — after `.ac-new` validation (entity_creation.rs:428)
+4. **Call from `discover_ac_agents()`** — opportunistic repair in scan loop (ac_discovery.rs:~449)
+5. **Add stderr logging** to `git_clone_async()` on success path (entity_creation.rs:1226)
+6. **Add post-clone index validation** to `git_clone_async()` (entity_creation.rs:1232)
+7. **Add `run_git_checkout_recovery()` helper** in `entity_creation.rs`
+8. **Test**: Create workgroup on a git-tracked project, verify gitignore and clone integrity
 
 ### Files to modify
-- `src-tauri/src/commands/entity_creation.rs` — main fix (steps 1-4)
-- `src-tauri/src/lib.rs` — register new command if repair command is added
-- `src-tauri/gen/schemas/*.json` — auto-generated on build if new command added
+- `src-tauri/src/commands/ac_discovery.rs` — helper function + calls in `create_ac_project` and `discover_ac_agents`
+- `src-tauri/src/commands/entity_creation.rs` — call in `create_workgroup` + post-clone validation + recovery helper
 
 ### Estimated scope
-- Core fix (steps 1-3): ~40 lines of new code in `entity_creation.rs`
-- Repair command (step 4): ~60 lines additional
-- No frontend changes required for the core fix
+- Primary fix (gitignore): ~40 lines new code across 2 files
+- Defensive layer (validation + recovery): ~35 lines in `entity_creation.rs`
+- No frontend changes required
+- No new Tauri commands needed
 
 ---
 
-## Dev-Rust Review
+## Dev-Rust Review (v2)
 
-### Agreement
+Scope: Section 2 only (.gitignore fix). Sections 3+ are dropped.
 
-The root cause analysis is thorough and well-reasoned. The `CREATE_NO_WINDOW` hypothesis (cause #1) is the most likely. I verified all `CREATE_NO_WINDOW` usages in the codebase — there are 6 total across 4 files. The other 5 are ALL read-only git operations (`git branch --show-current`, `git rev-parse --abbrev-ref HEAD`, `git status --porcelain`, `git log`). Only `git_clone_async` performs write operations (checkout phase), which is where the console handle absence could matter.
+### Exact insertion points (verified against current code)
 
-The post-clone validation via `.git/index` existence check is the right approach — lightweight, direct, and catches the exact failure mode observed.
+**A. `create_ac_project()` — ac_discovery.rs:702**
+```rust
+// Current code:
+700:    let ac_new = Path::new(&path).join(".ac-new");
+701:    std::fs::create_dir_all(&ac_new)
+702:        .map_err(|e| format!("Failed to create .ac-new directory: {}", e))?;
+703:    Ok(())  // INSERT ensure_ac_new_gitignore(&ac_new)?; BEFORE this line
+```
+Insert `ensure_ac_new_gitignore(&ac_new)?;` at line 703, before `Ok(())`. The `?` propagation is correct here — if we can't create the gitignore, the project creation should fail (the directory was just created, so write permission should exist).
 
-The choice of `git checkout HEAD -- .` over `git reset --hard` for recovery is correct.
+**B. `create_workgroup()` — entity_creation.rs:429**
+```rust
+// Current code:
+425:    let base = Path::new(&project_path).join(".ac-new");
+426:    if !base.is_dir() {
+427:        return Err(format!(".ac-new directory not found in {}", project_path));
+428:    }
+429:                                         // INSERT HERE
+430:    // Read team config
+```
+Insert `crate::commands::ac_discovery::ensure_ac_new_gitignore(&base)?;` at line 429. This is entity_creation.rs's first cross-module call to ac_discovery — there are no existing `use crate::commands::` imports in this file. Use the fully qualified path `crate::commands::ac_discovery::ensure_ac_new_gitignore` inline rather than adding an import, which is cleaner for a single call site.
 
-### Issue: Recovery function re-uses CREATE_NO_WINDOW
+**C. `discover_ac_agents()` — ac_discovery.rs:451**
+```rust
+// Current code:
+448:            let ac_new_dir = repo_dir.join(".ac-new");
+449:            if !ac_new_dir.is_dir() {
+450:                continue;
+451:            }
+452:                                         // INSERT HERE
+453:            let project_folder = repo_dir
+```
+Insert `let _ = ensure_ac_new_gitignore(&ac_new_dir);` at line 452. The `let _ =` is correct — discovery must not fail due to gitignore issues. This function scans ALL configured repo_paths on app startup, so it heals all existing projects.
 
-**This is the most critical concern.** The proposed `run_git_checkout_recovery()` in section 2c applies `CREATE_NO_WINDOW` to the recovery checkout command. If `CREATE_NO_WINDOW` is truly the root cause (and the plan ranks it as HIGH probability), then the recovery checkout will fail for the **exact same reason** — it performs the same kind of working tree write + index generation that failed during the original clone.
+### Helper function placement
 
-**Recommendation:** The recovery function should either:
-- (a) NOT use `CREATE_NO_WINDOW` — accept the brief console window flash as a tradeoff for correctness, OR
-- (b) Try with `CREATE_NO_WINDOW` first, and if `.git/index` still doesn't exist after recovery, retry WITHOUT the flag, OR
-- (c) Use environment variables to suppress console interaction without `CREATE_NO_WINDOW` (see suggestion below)
+Place `ensure_ac_new_gitignore()` as a `pub(crate) fn` in `ac_discovery.rs`, immediately before `create_ac_project()` (before line 697). This keeps it near its primary consumer and follows the file's existing layout of helper functions above the commands that use them.
 
-If we go with (a), the console flash is acceptable because recovery only triggers on failure, which should be rare.
+### Code correctness — all good
 
-### Issue: Working tree file count check is unnecessary
+- `lines()` handles both `\n` and `\r\n` (Rust stdlib) — correct for Windows-generated gitignores
+- `line.trim()` catches trailing whitespace/CR — good
+- `std::fs::write` is atomic on the content level (overwrites fully) — correct since we read+append+write
+- The function is NOT async — correct, matches other small filesystem helpers in the codebase
+- `wg-*/` (with trailing slash) is correct gitignore syntax for "directories only" matching
 
-Section 3 proposes checking `std::fs::read_dir(target)` for >1 entry alongside the `.git/index` check. This adds complexity without value — a partial checkout could have some files but a corrupt/missing index. The `.git/index` check alone is sufficient and directly tests the observed failure mode. Drop the file count check to keep validation simple.
+### One edge case to note
 
-### Concern: stderr cap inconsistency
+**discover_project()** (ac_discovery.rs:710-744) also scans `.ac-new/` directories. It's called when the user opens a specific project. The plan doesn't mention it, but it's another opportunity for repair. However, since `discover_ac_agents()` already covers startup repair across ALL projects, and `discover_project()` is read-only by design, I agree with skipping it. Not worth the extra call site.
 
-The plan proposes capping stderr at 1024 bytes for success logging. The existing error path caps at 512 bytes (line 1230). Use 512 for consistency.
+### No concerns or disagreements
 
-### Suggestion: Add `--progress` flag to clone
-
-`git clone --progress` forces progress output to stderr regardless of terminal detection. Without this flag, git skips progress output when stderr is not a TTY (which it isn't, since `output()` pipes it). Adding `--progress` forces git into a code path that doesn't query the console for terminal capabilities. This might prevent the checkout failure entirely, making the recovery path unnecessary. Worth testing before or alongside the validation approach.
-
-### Suggestion: Set `GIT_TERMINAL_PROMPT=0`
-
-Adding `cmd.env("GIT_TERMINAL_PROMPT", "0")` tells git to never prompt for terminal input. This prevents any internal console queries that might interfere with checkout. Combined with `--progress`, this could eliminate the root cause rather than just recovering from it.
-
-### Note: tokio::process::Command and output()
-
-The plan correctly uses `tokio::process::Command` + `.output().await`. One nuance: `output()` implicitly pipes stdout and stderr (`Stdio::piped()`). The explicit pipe setup shown in section 2d is technically redundant but doesn't hurt — I'd keep it only if we want the code to be self-documenting about intent. Otherwise, `output()` alone is sufficient.
-
-### Note: Repair command can be deferred
-
-Agree with the plan's framing — the repair command (Option A, section 4) is nice-to-have but not needed for the core fix. Affected repos can be fixed manually with `git checkout HEAD -- .` (Option B). Recommend implementing the core fix first, deferring the repair command to a follow-up if the issue recurs.
-
-### Summary
-
-The plan is solid. Two actionable changes before implementation:
-1. **Do NOT use `CREATE_NO_WINDOW` in the recovery function** — this would defeat the purpose if it's the root cause
-2. **Drop the working tree file count check** — `.git/index` alone is sufficient
-3. **Consider adding `--progress` and `GIT_TERMINAL_PROMPT=0`** to the clone command as a preventive measure alongside the validation
+The plan is clean and minimal. The three insertion points are correct. The helper function handles creation, idempotent append, and the edge cases properly. Ready for implementation.
