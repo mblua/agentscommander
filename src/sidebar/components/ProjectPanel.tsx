@@ -200,7 +200,7 @@ const ProjectPanel: Component = () => {
         const [deleteError, setDeleteError] = createSignal("");
         const [deleteInProgress, setDeleteInProgress] = createSignal(false);
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
-        const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; projectPath: string; x: number; y: number } | null>(null);
+        const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; projectPath: string; preferredAgentId?: string; x: number; y: number } | null>(null);
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -318,7 +318,7 @@ const ProjectPanel: Component = () => {
           });
         };
 
-        const handleReplicaContextMenu = (e: MouseEvent, sessionId: string, projectPath: string) => {
+        const handleReplicaContextMenu = (e: MouseEvent, sessionId: string, projectPath: string, preferredAgentId?: string) => {
           e.preventDefault();
           e.stopPropagation();
           cleanupCtx();
@@ -327,7 +327,7 @@ const ProjectPanel: Component = () => {
           setWgCtxMenu(null);
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
-          setReplicaCtxMenu({ sessionId, projectPath, x: e.clientX, y: e.clientY });
+          setReplicaCtxMenu({ sessionId, projectPath, preferredAgentId, x: e.clientX, y: e.clientY });
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
             setReplicaCtxMenu(null);
@@ -627,7 +627,7 @@ const ProjectPanel: Component = () => {
                                             onClick={() => handleReplicaClick(replica, wg, proj.path)}
                                             onContextMenu={(e) => {
                                               const s = session();
-                                              if (s && isLive()) handleReplicaContextMenu(e, s.id, proj.path);
+                                              if (s && isLive()) handleReplicaContextMenu(e, s.id, proj.path, replica.preferredAgentId);
                                             }}
                                             title={replica.path}
                                           >
@@ -1069,7 +1069,7 @@ const ProjectPanel: Component = () => {
                               await SessionAPI.create({
                                 cwd: session.workingDirectory,
                                 sessionName: session.name,
-                                agentId: resolved[0].id,
+                                agentId: resolved.find(a => a.id === menu.preferredAgentId)?.id ?? resolved[0].id,
                                 gitBranchSource: session.gitBranchSource ?? undefined,
                                 gitBranchPrefix: session.gitBranchPrefix ?? undefined,
                               });
