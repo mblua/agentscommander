@@ -4,12 +4,15 @@ import type { AcAgentMatrix, AcTeam, AcWorkgroup, AcAgentReplica } from "../../s
 import { AcDiscoveryAPI, SessionAPI, onDiscoveryBranchUpdated } from "../../shared/ipc";
 import AgentPickerModal from "./AgentPickerModal";
 import { sessionsStore } from "../stores/sessions";
+import { projectStore } from "../stores/project";
+import { extractProjectPath } from "../../shared/utils";
 
 interface PendingLaunch {
   path: string;
   sessionName: string;
   gitBranchSource?: string;
   gitBranchPrefix?: string;
+  projectPath?: string;
 }
 
 const AcDiscoveryPanel: Component = () => {
@@ -47,6 +50,7 @@ const AcDiscoveryPanel: Component = () => {
   };
 
   const handleReplicaClick = (replica: AcAgentReplica, wg: AcWorkgroup) => {
+    const projectPath = extractProjectPath(replica.path) ?? undefined;
     const repoPaths = replica.repoPaths ?? [];
     let gitBranchSource: string | undefined;
     let gitBranchPrefix: string | undefined;
@@ -65,6 +69,7 @@ const AcDiscoveryPanel: Component = () => {
         sessionName: `${wg.name}/${replica.name}`,
         gitBranchSource,
         gitBranchPrefix,
+        projectPath,
       });
       return;
     }
@@ -344,8 +349,23 @@ const AcDiscoveryPanel: Component = () => {
                     onClick={async () => {
                       setCtxMenuReplica(null);
                       cleanupCtxMenu();
-                      try { await SessionAPI.restart(session.id); }
-                      catch (err) { console.error("Failed to restart session:", err); }
+                      try {
+                        const projectPath = extractProjectPath(replica.path);
+                        const resolved = projectPath ? projectStore.getResolvedAgents(projectPath) : null;
+                        if (resolved && resolved.length > 0) {
+                          const agentId = resolved.find(a => a.id === replica.preferredAgentId)?.id ?? resolved[0].id;
+                          await SessionAPI.destroy(session.id);
+                          await SessionAPI.create({
+                            cwd: replica.path,
+                            sessionName: session.name,
+                            agentId,
+                            gitBranchSource: session.gitBranchSource ?? undefined,
+                            gitBranchPrefix: session.gitBranchPrefix ?? undefined,
+                          });
+                        } else {
+                          await SessionAPI.restart(session.id);
+                        }
+                      } catch (err) { console.error("Failed to restart session:", err); }
                     }}
                   >
                     Restart Session
@@ -369,6 +389,7 @@ const AcDiscoveryPanel: Component = () => {
         <Portal>
           <AgentPickerModal
             sessionName={pendingLaunch()!.sessionName}
+            projectPath={pendingLaunch()!.projectPath}
             onSelect={(agent) => {
               const pending = pendingLaunch()!;
               SessionAPI.create({

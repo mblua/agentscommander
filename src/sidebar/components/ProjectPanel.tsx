@@ -200,7 +200,7 @@ const ProjectPanel: Component = () => {
         const [deleteError, setDeleteError] = createSignal("");
         const [deleteInProgress, setDeleteInProgress] = createSignal(false);
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
-        const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; x: number; y: number } | null>(null);
+        const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; projectPath: string; x: number; y: number } | null>(null);
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -318,7 +318,7 @@ const ProjectPanel: Component = () => {
           });
         };
 
-        const handleReplicaContextMenu = (e: MouseEvent, sessionId: string) => {
+        const handleReplicaContextMenu = (e: MouseEvent, sessionId: string, projectPath: string) => {
           e.preventDefault();
           e.stopPropagation();
           cleanupCtx();
@@ -327,7 +327,7 @@ const ProjectPanel: Component = () => {
           setWgCtxMenu(null);
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
-          setReplicaCtxMenu({ sessionId, x: e.clientX, y: e.clientY });
+          setReplicaCtxMenu({ sessionId, projectPath, x: e.clientX, y: e.clientY });
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
             setReplicaCtxMenu(null);
@@ -627,7 +627,7 @@ const ProjectPanel: Component = () => {
                                             onClick={() => handleReplicaClick(replica, wg, proj.path)}
                                             onContextMenu={(e) => {
                                               const s = session();
-                                              if (s && isLive()) handleReplicaContextMenu(e, s.id);
+                                              if (s && isLive()) handleReplicaContextMenu(e, s.id, proj.path);
                                             }}
                                             title={replica.path}
                                           >
@@ -1060,8 +1060,24 @@ const ProjectPanel: Component = () => {
                       const menu = replicaCtxMenu();
                       setReplicaCtxMenu(null);
                       if (menu) {
-                        try { await SessionAPI.restart(menu.sessionId); }
-                        catch (e) { console.error("Failed to restart session:", e); }
+                        try {
+                          const resolved = projectStore.getResolvedAgents(menu.projectPath);
+                          if (resolved && resolved.length > 0) {
+                            const session = sessionsStore.sessions.find(s => s.id === menu.sessionId);
+                            if (session) {
+                              await SessionAPI.destroy(menu.sessionId);
+                              await SessionAPI.create({
+                                cwd: session.workingDirectory,
+                                sessionName: session.name,
+                                agentId: resolved[0].id,
+                                gitBranchSource: session.gitBranchSource ?? undefined,
+                                gitBranchPrefix: session.gitBranchPrefix ?? undefined,
+                              });
+                            }
+                          } else {
+                            await SessionAPI.restart(menu.sessionId);
+                          }
+                        } catch (e) { console.error("Failed to restart session:", e); }
                       }
                     }}
                   >
