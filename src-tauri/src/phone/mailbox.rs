@@ -455,6 +455,7 @@ impl MailboxPoller {
             match sessions.iter().find(|s| s.id == session_id.to_string()) {
                 Some(s) if s.waiting_for_input => {
                     log::info!("[mailbox] wake: session {} is idle, injecting message", session_id);
+                    drop(mgr);
                     break;
                 }
                 Some(_) => {} // still booting
@@ -1256,7 +1257,7 @@ impl MailboxPoller {
                 let candidate = format!("{}/__agent_{}", wg_dir, agent_short);
                 if std::path::Path::new(&candidate).is_dir() {
                     log::info!("[mailbox] wake: resolved WG agent path from sibling session: {}", candidate);
-                    return Some(candidate);
+                    return Some(std::path::PathBuf::from(&candidate).to_string_lossy().to_string());
                 }
             }
         }
