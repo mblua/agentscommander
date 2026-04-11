@@ -15,6 +15,7 @@ import {
   onSessionBusy,
   onAgentCompleted,
   onAgentHung,
+  onCompletionStatusReset,
   onSessionGitBranch,
   onTelegramBridgeAttached,
   onTelegramBridgeDetached,
@@ -169,6 +170,13 @@ const SidebarApp: Component = () => {
       await onAgentHung(({ id }) => {
         sessionsStore.setCompletionStatus(id, "hung");
         sessionsStore.addHungNotification(id);
+      })
+    );
+
+    unlisteners.push(
+      await onCompletionStatusReset(({ id }) => {
+        sessionsStore.setCompletionStatus(id, "working");
+        sessionsStore.dismissHungNotification(id);
       })
     );
 

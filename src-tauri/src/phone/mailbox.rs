@@ -711,16 +711,19 @@ impl MailboxPoller {
             "[mailbox] Injecting into PTY session={} msg={} payload_len={} first_100={:?}",
             session_id, msg.id, payload.len(), payload.chars().take(100).collect::<String>()
         );
+
+        // Reset completion tracking BEFORE inject — prevents watcher race where old
+        // phrase_detected state triggers a false "completed" event during the inject.
+        if let Some(tracker) = app.try_state::<Arc<crate::pty::completion_tracker::CompletionTracker>>() {
+            tracker.reset(session_id);
+            let _ = tauri::Emitter::emit(app, "completion_status_reset", serde_json::json!({ "id": session_id.to_string() }));
+        }
+
         crate::pty::inject::inject_text_into_session(app, session_id, &payload, true).await
             .map_err(|e| {
                 log::error!("[mailbox] PTY injection FAILED session={} msg={}: {}", session_id, msg.id, e);
                 e
             })?;
-
-        // Reset completion tracking — agent is now working on new task
-        if let Some(tracker) = app.try_state::<Arc<crate::pty::completion_tracker::CompletionTracker>>() {
-            tracker.reset(session_id);
-        }
 
         log::info!("[mailbox] PTY injection SUCCESS session={} msg={}", session_id, msg.id);
         let _ = tauri::Emitter::emit(
@@ -784,21 +787,18 @@ impl MailboxPoller {
             body = msg.body,
             bin = bin_path,
         );
-        let result = crate::pty::inject::inject_text_into_session(
+        // Reset completion tracking BEFORE inject to avoid watcher race
+        if let Some(tracker) = app.try_state::<Arc<crate::pty::completion_tracker::CompletionTracker>>() {
+            tracker.reset(session_id);
+            let _ = tauri::Emitter::emit(app, "completion_status_reset", serde_json::json!({ "id": session_id.to_string() }));
+        }
+
+        crate::pty::inject::inject_text_into_session(
             app,
             session_id,
             &payload,
             true,
-        ).await;
-
-        // Reset completion tracking on successful followup injection
-        if result.is_ok() {
-            if let Some(tracker) = app.try_state::<Arc<crate::pty::completion_tracker::CompletionTracker>>() {
-                tracker.reset(session_id);
-            }
-        }
-
-        result
+        ).await
     }
 
     /// Find the best session for a given agent name (matches by working directory).

@@ -233,6 +233,12 @@ export function onAgentHung(
   return transport.listen<{ id: string }>("agent_hung", callback);
 }
 
+export function onCompletionStatusReset(
+  callback: (data: { id: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ id: string }>("completion_status_reset", callback);
+}
+
 export function onTelegramBridgeAttached(
   callback: (data: BridgeInfo) => void
 ): Promise<UnlistenFn> {

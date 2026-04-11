@@ -138,6 +138,8 @@ export interface AppSettings {
   projectPaths: string[];
   sidebarStyle: string;
   onboardingDismissed: boolean;
+  completionPhrase: string;
+  hungTimeoutSecs: number;
 }
 
 // Team grouping for sidebar

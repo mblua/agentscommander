@@ -190,12 +190,13 @@ pub fn run() {
                 let _ = tauri::Emitter::emit(app, "agent_completed", serde_json::json!({
                     "id": id.to_string()
                 }));
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr_clone = session_mgr.inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    let mgr = mgr_clone.read().await;
-                    mgr.set_completion_status(id, "completed").await;
-                });
+                if let Some(session_mgr) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() {
+                    let mgr_clone = session_mgr.inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mgr = mgr_clone.read().await;
+                        mgr.set_completion_status(id, "completed").await;
+                    });
+                }
             }
         },
         move |id| {
@@ -203,12 +204,13 @@ pub fn run() {
                 let _ = tauri::Emitter::emit(app, "agent_hung", serde_json::json!({
                     "id": id.to_string()
                 }));
-                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                let mgr_clone = session_mgr.inner().clone();
-                tauri::async_runtime::spawn(async move {
-                    let mgr = mgr_clone.read().await;
-                    mgr.set_completion_status(id, "hung").await;
-                });
+                if let Some(session_mgr) = app.try_state::<Arc<tokio::sync::RwLock<SessionManager>>>() {
+                    let mgr_clone = session_mgr.inner().clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mgr = mgr_clone.read().await;
+                        mgr.set_completion_status(id, "hung").await;
+                    });
+                }
             }
         },
     );

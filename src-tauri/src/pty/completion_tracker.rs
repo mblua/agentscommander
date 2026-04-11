@@ -9,8 +9,8 @@ type Callback = Arc<dyn Fn(Uuid) + Send + Sync>;
 
 pub struct CompletionTracker {
     state: Arc<Mutex<HashMap<Uuid, SessionCompletionState>>>,
-    phrase: Arc<Mutex<String>>,
-    hung_timeout: Arc<Mutex<Duration>>,
+    phrase: String,
+    hung_timeout: Duration,
     on_completed: Callback,
     on_hung: Callback,
 }
@@ -38,8 +38,8 @@ impl CompletionTracker {
     ) -> Arc<Self> {
         Arc::new(Self {
             state: Arc::new(Mutex::new(HashMap::new())),
-            phrase: Arc::new(Mutex::new(phrase)),
-            hung_timeout: Arc::new(Mutex::new(Duration::from_secs(hung_timeout_secs))),
+            phrase,
+            hung_timeout: Duration::from_secs(hung_timeout_secs),
             on_completed: Arc::new(on_completed),
             on_hung: Arc::new(on_hung),
         })
@@ -47,8 +47,7 @@ impl CompletionTracker {
 
     /// Check if text contains the completion phrase. Called from PTY read loop.
     pub fn scan_phrase(&self, text: &str) -> bool {
-        let phrase = self.phrase.lock().unwrap();
-        !phrase.is_empty() && text.contains(phrase.as_str())
+        !self.phrase.is_empty() && text.contains(self.phrase.as_str())
     }
 
     /// Called from PTY read loop when output contains the completion phrase.
@@ -104,12 +103,6 @@ impl CompletionTracker {
             .unwrap_or(CompletionStatus::Working)
     }
 
-    /// Update phrase and timeout from settings (hot reload).
-    pub fn update_config(&self, phrase: String, hung_timeout_secs: u64) {
-        *self.phrase.lock().unwrap() = phrase;
-        *self.hung_timeout.lock().unwrap() = Duration::from_secs(hung_timeout_secs);
-    }
-
     /// Start background watcher thread.
     pub fn start(self: &Arc<Self>, shutdown: crate::shutdown::ShutdownSignal) {
         let tracker = Arc::clone(self);
@@ -122,8 +115,6 @@ impl CompletionTracker {
                     break;
                 }
 
-                let hung_timeout = *tracker.hung_timeout.lock().unwrap();
-
                 // Collect events under lock, fire callbacks after unlocking
                 let mut completed_ids = Vec::new();
                 let mut hung_ids = Vec::new();
@@ -133,18 +124,15 @@ impl CompletionTracker {
                     let mut state = tracker.state.lock().unwrap();
 
                     for (&session_id, s) in state.iter_mut() {
-                        if s.status == CompletionStatus::Working && s.phrase_detected {
-                            if let Some(idle_since) = s.idle_since {
-                                let _ = idle_since; // phrase + idle = completed
-                                s.status = CompletionStatus::Completed;
-                                completed_ids.push(session_id);
-                            }
+                        if s.status == CompletionStatus::Working && s.phrase_detected && s.idle_since.is_some() {
+                            s.status = CompletionStatus::Completed;
+                            completed_ids.push(session_id);
                         }
 
                         if s.status == CompletionStatus::Working && !s.phrase_detected {
                             if let Some(idle_since) = s.idle_since {
                                 if let Some(elapsed) = now.checked_duration_since(idle_since) {
-                                    if elapsed > hung_timeout && !s.hung_notified {
+                                    if elapsed > tracker.hung_timeout && !s.hung_notified {
                                         s.status = CompletionStatus::Hung;
                                         s.hung_notified = true;
                                         hung_ids.push(session_id);
