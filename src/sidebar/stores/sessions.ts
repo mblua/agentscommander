@@ -247,6 +247,9 @@ export const sessionsStore = {
   get groupedSessions() {
     return groupedSessionsMemo();
   },
+  get hungNotifications() {
+    return state.hungNotifications;
+  },
   get collapsedTeams() {
     return collapsedTeams();
   },
