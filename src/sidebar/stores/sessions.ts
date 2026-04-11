@@ -20,6 +20,18 @@ function normalizePath(p: string): string {
   return p.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
 }
 
+/** Find a session by ID with normalized comparison (trim + lowercase). */
+function findSessionById(id: string): Session | undefined {
+  const exact = state.sessions.find((s) => s.id === id);
+  if (exact) return exact;
+  const norm = id.trim().toLowerCase();
+  const fuzzy = state.sessions.find((s) => s.id.trim().toLowerCase() === norm);
+  if (fuzzy) {
+    console.warn(`[sessions] ID mismatch: event="${id}" store="${fuzzy.id}" — matched via normalization`);
+  }
+  return fuzzy;
+}
+
 const allTeamPathsMemo = createMemo(() => {
   const paths = new Set<string>();
   for (const t of state.teams) {
@@ -314,13 +326,17 @@ export const sessionsStore = {
   },
 
   setCompletionStatus(sessionId: string, status: "working" | "completed" | "hung") {
-    setState("sessions", (s) => s.id === sessionId, "completionStatus", status);
+    const session = findSessionById(sessionId);
+    const resolvedId = session?.id ?? sessionId;
+    setState("sessions", (s) => s.id === resolvedId, "completionStatus", status);
   },
 
   addHungNotification(sessionId: string) {
-    const name = state.sessions.find(s => s.id === sessionId)?.name ?? sessionId;
+    const session = findSessionById(sessionId);
+    const name = session?.name ?? sessionId;
+    const resolvedId = session?.id ?? sessionId;
     setState("hungNotifications", (prev) => {
-      const next = [...prev, { sessionId, sessionName: name, timestamp: Date.now() }];
+      const next = [...prev, { sessionId: resolvedId, sessionName: name, timestamp: Date.now() }];
       return next.length > 5 ? next.slice(-5) : next;
     });
   },
@@ -330,7 +346,8 @@ export const sessionsStore = {
   },
 
   addNotification(type: NotificationType, sessionId: string, message: string) {
-    const name = state.sessions.find((s) => s.id === sessionId)?.name ?? sessionId;
+    const session = findSessionById(sessionId);
+    const name = session?.name ?? sessionId;
     const notif: AppNotification = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       type,
