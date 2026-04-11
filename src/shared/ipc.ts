@@ -222,15 +222,15 @@ export function onSessionBusy(
 }
 
 export function onAgentCompleted(
-  callback: (data: { id: string }) => void
+  callback: (data: { id: string; name: string }) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<{ id: string }>("agent_completed", callback);
+  return transport.listen<{ id: string; name: string }>("agent_completed", callback);
 }
 
 export function onAgentHung(
-  callback: (data: { id: string }) => void
+  callback: (data: { id: string; name: string; idleMinutes?: number }) => void
 ): Promise<UnlistenFn> {
-  return transport.listen<{ id: string }>("agent_hung", callback);
+  return transport.listen<{ id: string; name: string; idleMinutes?: number }>("agent_hung", callback);
 }
 
 export function onCompletionStatusReset(

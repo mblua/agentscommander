@@ -161,17 +161,21 @@ const SidebarApp: Component = () => {
     );
 
     unlisteners.push(
-      await onAgentCompleted(({ id }) => {
+      await onAgentCompleted(({ id, name }) => {
         sessionsStore.setCompletionStatus(id, "completed");
-        sessionsStore.addNotification("agent_completed", id, "Agent has completed its task and is waiting for input.");
+        sessionsStore.addNotification("agent_completed", id, "Agent has completed its task and is waiting for input.", name);
       })
     );
 
     unlisteners.push(
-      await onAgentHung(({ id }) => {
+      await onAgentHung(({ id, name, idleMinutes }) => {
         sessionsStore.setCompletionStatus(id, "hung");
-        sessionsStore.addHungNotification(id);
-        sessionsStore.addNotification("agent_hung", id, "Agent may be hung — idle for an extended period without completing its task.");
+        sessionsStore.addHungNotification(id, name, idleMinutes);
+        const mins = idleMinutes ?? 0;
+        const msg = mins > 0
+          ? `Agent may be hung \u2014 idle for ${mins}+ minutes without completing its task.`
+          : "Agent may be hung \u2014 idle for an extended period without completing its task.";
+        sessionsStore.addNotification("agent_hung", id, msg, name);
       })
     );
 

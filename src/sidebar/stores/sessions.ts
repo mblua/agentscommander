@@ -331,12 +331,14 @@ export const sessionsStore = {
     setState("sessions", (s) => s.id === resolvedId, "completionStatus", status);
   },
 
-  addHungNotification(sessionId: string) {
+  addHungNotification(sessionId: string, backendName?: string, idleMinutes?: number) {
     const session = findSessionById(sessionId);
-    const name = session?.name ?? sessionId;
+    const name = session?.name ?? backendName ?? sessionId;
     const resolvedId = session?.id ?? sessionId;
+    // Backdate timestamp so elapsed display starts at idleMinutes, not 0
+    const timestamp = idleMinutes ? Date.now() - idleMinutes * 60000 : Date.now();
     setState("hungNotifications", (prev) => {
-      const next = [...prev, { sessionId: resolvedId, sessionName: name, timestamp: Date.now() }];
+      const next = [...prev, { sessionId: resolvedId, sessionName: name, timestamp }];
       return next.length > 5 ? next.slice(-5) : next;
     });
   },
@@ -345,9 +347,9 @@ export const sessionsStore = {
     setState("hungNotifications", (prev) => prev.filter(n => n.sessionId !== sessionId));
   },
 
-  addNotification(type: NotificationType, sessionId: string, message: string) {
+  addNotification(type: NotificationType, sessionId: string, message: string, backendName?: string) {
     const session = findSessionById(sessionId);
-    const name = session?.name ?? sessionId;
+    const name = session?.name ?? backendName ?? sessionId;
     const notif: AppNotification = {
       id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       type,
