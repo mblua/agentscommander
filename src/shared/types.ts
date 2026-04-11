@@ -172,6 +172,18 @@ export interface HungNotification {
   timestamp: number;
 }
 
+export type NotificationType = "agent_hung" | "agent_completed";
+
+export interface AppNotification {
+  id: string;
+  type: NotificationType;
+  sessionId: string;
+  sessionName: string;
+  message: string;
+  timestamp: number;
+  read: boolean;
+}
+
 export interface SessionsState {
   sessions: Session[];
   activeId: string | null;
@@ -181,6 +193,7 @@ export interface SessionsState {
   showCategories: boolean;
   repos: RepoMatch[];
   hungNotifications: HungNotification[];
+  notifications: AppNotification[];
 }
 
 // Phone communication types

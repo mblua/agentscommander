@@ -4,10 +4,12 @@ import { projectStore } from "../stores/project";
 import { sessionsStore } from "../stores/sessions";
 import { ProjectAPI, GuideAPI, emitThemeChanged } from "../../shared/ipc";
 import SettingsModal from "./SettingsModal";
+import NotificationsModal from "./NotificationsModal";
 
 const ActionBar: Component = () => {
   const [showDropdown, setShowDropdown] = createSignal(false);
   const [showSettings, setShowSettings] = createSignal(false);
+  const [showNotifications, setShowNotifications] = createSignal(false);
   const [confirmPath, setConfirmPath] = createSignal<string | null>(null);
   const [toastMsg, setToastMsg] = createSignal<string | null>(null);
   const [isLight, setIsLight] = createSignal(true);
@@ -129,6 +131,16 @@ const ActionBar: Component = () => {
           >
             {isLight() ? "\u2600\uFE0F" : "\uD83C\uDF19"}
           </button>
+          <button
+            class="toolbar-gear-btn notif-bell-btn"
+            onClick={() => setShowNotifications(true)}
+            title="Notifications"
+          >
+            &#x1F514;
+            <Show when={sessionsStore.unreadCount > 0}>
+              <span class="notif-badge">{sessionsStore.unreadCount}</span>
+            </Show>
+          </button>
           <button class="toolbar-gear-btn" onClick={() => setShowSettings(true)} title="Settings">
             &#x2699;
           </button>
@@ -136,6 +148,7 @@ const ActionBar: Component = () => {
       </div>
 
       {showSettings() && <SettingsModal onClose={() => setShowSettings(false)} />}
+      {showNotifications() && <NotificationsModal onClose={() => setShowNotifications(false)} />}
       <Show when={confirmPath()}>
         <div class="confirm-overlay" onClick={() => setConfirmPath(null)}>
           <div class="confirm-dialog" onClick={(e) => e.stopPropagation()}>

@@ -1,7 +1,7 @@
 import { createMemo, createSignal } from "solid-js";
 import { createStore } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
-import type { RepoMatch, Session, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
+import type { AppNotification, NotificationType, RepoMatch, Session, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
 import { projectStore } from "./project";
 
 const [state, setState] = createStore<SessionsState>({
@@ -13,6 +13,7 @@ const [state, setState] = createStore<SessionsState>({
   showCategories: true,
   repos: [],
   hungNotifications: [],
+  notifications: [],
 });
 
 function normalizePath(p: string): string {
@@ -250,6 +251,12 @@ export const sessionsStore = {
   get hungNotifications() {
     return state.hungNotifications;
   },
+  get notifications() {
+    return state.notifications;
+  },
+  get unreadCount() {
+    return state.notifications.filter((n) => !n.read).length;
+  },
   get collapsedTeams() {
     return collapsedTeams();
   },
@@ -320,6 +327,32 @@ export const sessionsStore = {
 
   dismissHungNotification(sessionId: string) {
     setState("hungNotifications", (prev) => prev.filter(n => n.sessionId !== sessionId));
+  },
+
+  addNotification(type: NotificationType, sessionId: string, message: string) {
+    const name = state.sessions.find((s) => s.id === sessionId)?.name ?? sessionId;
+    const notif: AppNotification = {
+      id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      type,
+      sessionId,
+      sessionName: name,
+      message,
+      timestamp: Date.now(),
+      read: false,
+    };
+    setState("notifications", (prev) => [notif, ...prev]);
+  },
+
+  markAllRead() {
+    setState("notifications", {}, "read", true);
+  },
+
+  clearAllNotifications() {
+    setState("notifications", []);
+  },
+
+  clearNotification(id: string) {
+    setState("notifications", (prev) => prev.filter((n) => n.id !== id));
   },
 
   setTeams(teams: Team[]) {

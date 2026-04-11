@@ -163,6 +163,7 @@ const SidebarApp: Component = () => {
     unlisteners.push(
       await onAgentCompleted(({ id }) => {
         sessionsStore.setCompletionStatus(id, "completed");
+        sessionsStore.addNotification("agent_completed", id, "Agent has completed its task and is waiting for input.");
       })
     );
 
@@ -170,6 +171,7 @@ const SidebarApp: Component = () => {
       await onAgentHung(({ id }) => {
         sessionsStore.setCompletionStatus(id, "hung");
         sessionsStore.addHungNotification(id);
+        sessionsStore.addNotification("agent_hung", id, "Agent may be hung — idle for an extended period without completing its task.");
       })
     );
 
