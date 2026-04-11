@@ -526,6 +526,7 @@ pub fn run() {
                             ps.git_branch_source.clone(),
                             ps.git_branch_prefix.clone(),
                             false, // skip_continue
+                            false, // shell_was_explicit
                         ).await {
                             Ok(info) => {
                                 if ps.was_active {

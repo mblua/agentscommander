@@ -33,6 +33,7 @@ pub async fn create_session_inner(
     git_branch_source: Option<String>,
     git_branch_prefix: Option<String>,
     skip_continue: bool,
+    shell_was_explicit: bool,
 ) -> Result<SessionInfo, String> {
     let mgr = session_mgr.read().await;
     let mut session = mgr
@@ -83,7 +84,7 @@ pub async fn create_session_inner(
             false
         }
     };
-    if is_claude && claude_project_exists && !skip_continue {
+    if is_claude && claude_project_exists && !skip_continue && !shell_was_explicit {
         if let Some(ref aid) = agent_id {
             let already_has_continue = full_cmd.split_whitespace().any(|t| {
                 let lower = t.to_lowercase();
@@ -334,6 +335,10 @@ pub async fn create_session(
             .unwrap_or_else(|| "C:\\".to_string())
     });
 
+    // Track whether the caller explicitly provided a shell command (project-level agents).
+    // When true, skip auto-continue since the agent may use a different Claude config dir.
+    let shell_was_explicit = shell.is_some();
+
     // If agentId provided and shell not explicitly set, use that agent's command
     let (shell, shell_args, agent_label) = match (&shell, &agent_id) {
         (None, Some(aid)) => {
@@ -378,6 +383,7 @@ pub async fn create_session(
         git_branch_source,
         git_branch_prefix,
         false, // skip_continue
+        shell_was_explicit,
     )
     .await?;
 
@@ -553,6 +559,7 @@ pub async fn restart_session(
         git_branch_source,
         git_branch_prefix,
         true,  // skip_continue — the whole point of restart
+        false, // shell_was_explicit — restart re-uses session's own shell
     )
     .await?;
 
@@ -803,6 +810,7 @@ pub async fn create_root_agent_session(
         None,
         None,
         false, // skip_continue
+        false, // shell_was_explicit
     )
     .await?;
 
