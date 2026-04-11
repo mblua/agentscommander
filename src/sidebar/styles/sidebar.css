@@ -3685,6 +3685,25 @@ html.light-theme[data-sidebar-style="neon-circuit"] .session-item.active {
   box-shadow: none;
 }
 
+/* Light-theme counterparts — higher specificity to beat
+   html.light-theme[data-sidebar-style] .replica-item:has(...) beacon rules */
+html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access .replica-item:has(.ac-discovery-badge.coord),
+html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replica-item:has(.ac-discovery-badge.coord) {
+  background: transparent;
+  border: none;
+  border-radius: 0;
+  margin: 0;
+  padding: 4px var(--spacing-md) 4px calc(var(--spacing-md) + 6px);
+  box-shadow: none;
+}
+
+html.light-theme[data-sidebar-style="deep-space"] .coord-quick-access .replica-item:has(.ac-discovery-badge.coord):hover,
+html.light-theme[data-sidebar-style="obsidian-mesh"] .coord-quick-access .replica-item:has(.ac-discovery-badge.coord):hover {
+  background: var(--sidebar-hover);
+  border: none;
+  box-shadow: none;
+}
+
 /* ---- Deep Space: coordinator quick-access enabled ---- */
 
 [data-sidebar-style="deep-space"] .coord-quick-access {
