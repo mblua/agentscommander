@@ -276,11 +276,6 @@ impl PtyManager {
                         }
                         scan_response_markers(id, &text, &response_watchers);
 
-                        // Scan for completion phrase
-                        if has_printable && completion_tracker.scan_phrase(&text) {
-                            completion_tracker.record_phrase_detected(id);
-                        }
-
                         // Feed Telegram bridge if active (non-blocking)
                         if let Ok(senders) = output_senders.lock() {
                             if let Some(tx) = senders.get(&id) {

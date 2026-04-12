@@ -335,6 +335,23 @@ impl MailboxPoller {
             }
         }
 
+        // Track that sender has responded (for completion detection).
+        // Resolve sender's session from their token to record the response.
+        if let Some(ref token_str) = msg.token {
+            if let Ok(token_uuid) = Uuid::parse_str(token_str) {
+                let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+                let mgr = session_mgr.read().await;
+                if let Some(sender_session) = mgr.find_by_token(token_uuid).await {
+                    drop(mgr);
+                    if let Some(tracker) = app.try_state::<Arc<crate::pty::completion_tracker::CompletionTracker>>() {
+                        let sender_id = Uuid::parse_str(&sender_session.id).unwrap_or_default();
+                        tracker.record_response_sent(sender_id);
+                        log::info!("[mailbox] Recorded response sent by session {}", &sender_session.id[..8]);
+                    }
+                }
+            }
+        }
+
         // Move to delivered/ with token stripped
         self.move_to_delivered(path, &msg).await
     }
@@ -713,9 +730,10 @@ impl MailboxPoller {
         );
 
         // Reset completion tracking BEFORE inject — prevents watcher race where old
-        // phrase_detected state triggers a false "completed" event during the inject.
+        // state triggers a false "completed" event during the inject.
         if let Some(tracker) = app.try_state::<Arc<crate::pty::completion_tracker::CompletionTracker>>() {
             tracker.reset(session_id);
+            tracker.record_message_received(session_id);
             let _ = tauri::Emitter::emit(app, "completion_status_reset", serde_json::json!({ "id": session_id.to_string() }));
         }
 
@@ -790,6 +808,7 @@ impl MailboxPoller {
         // Reset completion tracking BEFORE inject to avoid watcher race
         if let Some(tracker) = app.try_state::<Arc<crate::pty::completion_tracker::CompletionTracker>>() {
             tracker.reset(session_id);
+            tracker.record_message_received(session_id);
             let _ = tauri::Emitter::emit(app, "completion_status_reset", serde_json::json!({ "id": session_id.to_string() }));
         }
 

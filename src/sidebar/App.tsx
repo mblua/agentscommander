@@ -15,6 +15,7 @@ import {
   onSessionBusy,
   onAgentCompleted,
   onAgentHung,
+  onAgentFollowupSent,
   onCompletionStatusReset,
   onSessionGitBranch,
   onTelegramBridgeAttached,
@@ -176,6 +177,12 @@ const SidebarApp: Component = () => {
           ? `Agent may be hung \u2014 idle for ${mins}+ minutes without completing its task.`
           : "Agent may be hung \u2014 idle for an extended period without completing its task.";
         sessionsStore.addNotification("agent_hung", id, msg, name);
+      })
+    );
+
+    unlisteners.push(
+      await onAgentFollowupSent(({ id, name }) => {
+        sessionsStore.addNotification("agent_followup", id, `Follow-up reminder sent to ${name}`, name);
       })
     );
 

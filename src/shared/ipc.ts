@@ -233,6 +233,12 @@ export function onAgentHung(
   return transport.listen<{ id: string; name: string; idleMinutes?: number }>("agent_hung", callback);
 }
 
+export function onAgentFollowupSent(
+  callback: (data: { id: string; name: string }) => void
+): Promise<UnlistenFn> {
+  return transport.listen<{ id: string; name: string }>("agent_followup_sent", callback);
+}
+
 export function onCompletionStatusReset(
   callback: (data: { id: string }) => void
 ): Promise<UnlistenFn> {

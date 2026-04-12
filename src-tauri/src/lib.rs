@@ -175,15 +175,15 @@ pub fn run() {
 
     let output_senders: OutputSenderMap = Arc::new(Mutex::new(HashMap::new()));
 
-    // Completion tracker: detects agent completion phrase + hung sessions.
+    // Completion tracker: detects agent completion via response tracking + hung sessions.
     // Must be created BEFORE IdleDetector so idle/busy callbacks can capture it.
     let app_handle_lock: Arc<OnceLock<tauri::AppHandle>> = Arc::new(OnceLock::new());
     let handle_for_completed = Arc::clone(&app_handle_lock);
     let handle_for_hung = Arc::clone(&app_handle_lock);
+    let handle_for_followup = Arc::clone(&app_handle_lock);
 
     let settings_for_tracker = crate::config::settings::load_settings();
     let completion_tracker = crate::pty::completion_tracker::CompletionTracker::new(
-        settings_for_tracker.completion_phrase.clone(),
         settings_for_tracker.hung_timeout_secs,
         move |id, name| {
             if let Some(app) = handle_for_completed.get() {
@@ -214,6 +214,29 @@ pub fn run() {
                         mgr.set_completion_status(id, "hung").await;
                     });
                 }
+            }
+        },
+        move |id, name| {
+            if let Some(app) = handle_for_followup.get() {
+                log::info!("[completion] injecting follow-up reminder for {} ({})", &id.to_string()[..8], name);
+                let app_clone = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    let reminder = format!(
+                        "\n[System Reminder] You appear to be idle. Don't forget to reply to whoever requested your last task. Use the send command to report your results.\n\r"
+                    );
+                    if let Err(e) = crate::pty::inject::inject_text_into_session(&app_clone, id, &reminder, true).await {
+                        log::error!("[completion] follow-up injection failed for {}: {}", &id.to_string()[..8], e);
+                    } else {
+                        // Mark follow-up as sent on the tracker
+                        if let Some(tracker) = app_clone.try_state::<std::sync::Arc<crate::pty::completion_tracker::CompletionTracker>>() {
+                            tracker.mark_followup_sent(id);
+                        }
+                    }
+                });
+                let _ = tauri::Emitter::emit(app, "agent_followup_sent", serde_json::json!({
+                    "id": id.to_string(),
+                    "name": name
+                }));
             }
         },
     );

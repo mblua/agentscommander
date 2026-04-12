@@ -172,7 +172,7 @@ export interface HungNotification {
   timestamp: number;
 }
 
-export type NotificationType = "agent_hung" | "agent_completed";
+export type NotificationType = "agent_hung" | "agent_completed" | "agent_followup";
 
 export interface AppNotification {
   id: string;

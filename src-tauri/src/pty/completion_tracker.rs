@@ -7,18 +7,20 @@ const WATCHER_INTERVAL: Duration = Duration::from_secs(5);
 
 type CompletedCallback = Arc<dyn Fn(Uuid, String) + Send + Sync>;
 type HungCallback = Arc<dyn Fn(Uuid, String, u64) + Send + Sync>;
+type FollowupCallback = Arc<dyn Fn(Uuid, String) + Send + Sync>;
 
 pub struct CompletionTracker {
     state: Arc<Mutex<HashMap<Uuid, SessionCompletionState>>>,
-    phrase: String,
     hung_timeout: Duration,
     on_completed: CompletedCallback,
     on_hung: HungCallback,
+    on_followup: FollowupCallback,
 }
 
 struct SessionCompletionState {
     name: String,
-    phrase_detected: bool,
+    has_pending_response: bool,
+    followup_sent: bool,
     idle_since: Option<Instant>,
     status: CompletionStatus,
     hung_notified: bool,
@@ -33,31 +35,32 @@ pub enum CompletionStatus {
 
 impl CompletionTracker {
     pub fn new(
-        phrase: String,
         hung_timeout_secs: u64,
         on_completed: impl Fn(Uuid, String) + Send + Sync + 'static,
         on_hung: impl Fn(Uuid, String, u64) + Send + Sync + 'static,
+        on_followup: impl Fn(Uuid, String) + Send + Sync + 'static,
     ) -> Arc<Self> {
         log::info!(
-            "[completion] initialized: phrase={:?}, hung_timeout={}s",
-            phrase, hung_timeout_secs
+            "[completion] initialized: hung_timeout={}s",
+            hung_timeout_secs
         );
         Arc::new(Self {
             state: Arc::new(Mutex::new(HashMap::new())),
-            phrase,
             hung_timeout: Duration::from_secs(hung_timeout_secs),
             on_completed: Arc::new(on_completed),
             on_hung: Arc::new(on_hung),
+            on_followup: Arc::new(on_followup),
         })
     }
 
     /// Register a Claude session for completion tracking.
-    /// Only registered sessions are monitored for phrase detection and hung state.
+    /// Only registered sessions are monitored for response tracking and hung state.
     pub fn register_session(&self, session_id: Uuid, name: String) {
         let mut state = self.state.lock().unwrap();
         state.entry(session_id).or_insert_with(|| SessionCompletionState {
             name,
-            phrase_detected: false,
+            has_pending_response: false,
+            followup_sent: false,
             idle_since: None,
             status: CompletionStatus::Working,
             hung_notified: false,
@@ -65,18 +68,32 @@ impl CompletionTracker {
         log::info!("[completion] registered session {}", &session_id.to_string()[..8]);
     }
 
-    /// Check if text contains the completion phrase. Called from PTY read loop.
-    pub fn scan_phrase(&self, text: &str) -> bool {
-        !self.phrase.is_empty() && text.contains(self.phrase.as_str())
-    }
-
-    /// Called from PTY read loop when output contains the completion phrase.
-    /// Only acts on registered sessions.
-    pub fn record_phrase_detected(&self, session_id: Uuid) {
+    /// Called after a message is injected into a session's PTY.
+    /// Marks that the agent has a pending response obligation.
+    pub fn record_message_received(&self, session_id: Uuid) {
         let mut state = self.state.lock().unwrap();
         if let Some(entry) = state.get_mut(&session_id) {
-            entry.phrase_detected = true;
-            log::info!("[completion] phrase detected for {}", &session_id.to_string()[..8]);
+            entry.has_pending_response = true;
+            log::info!("[completion] message received for {}", &session_id.to_string()[..8]);
+        }
+    }
+
+    /// Called when an agent successfully sends a message via the outbox.
+    /// Clears the pending response obligation.
+    pub fn record_response_sent(&self, session_id: Uuid) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(entry) = state.get_mut(&session_id) {
+            entry.has_pending_response = false;
+            log::info!("[completion] response sent by {}", &session_id.to_string()[..8]);
+        }
+    }
+
+    /// Called by the on_followup callback after injecting the reminder.
+    pub fn mark_followup_sent(&self, session_id: Uuid) {
+        let mut state = self.state.lock().unwrap();
+        if let Some(entry) = state.get_mut(&session_id) {
+            entry.followup_sent = true;
+            log::info!("[completion] followup sent for {}", &session_id.to_string()[..8]);
         }
     }
 
@@ -84,7 +101,8 @@ impl CompletionTracker {
     pub fn reset(&self, session_id: Uuid) {
         let mut state = self.state.lock().unwrap();
         if let Some(s) = state.get_mut(&session_id) {
-            s.phrase_detected = false;
+            s.has_pending_response = false;
+            s.followup_sent = false;
             s.idle_since = None;
             s.status = CompletionStatus::Working;
             s.hung_notified = false;
@@ -147,18 +165,39 @@ impl CompletionTracker {
                 // Collect events under lock, fire callbacks after unlocking
                 let mut completed: Vec<(Uuid, String)> = Vec::new();
                 let mut hung: Vec<(Uuid, String, u64)> = Vec::new();
+                let mut followups: Vec<(Uuid, String)> = Vec::new();
 
                 {
                     let now = Instant::now();
                     let mut state = tracker.state.lock().unwrap();
 
                     for (&session_id, s) in state.iter_mut() {
-                        if s.status == CompletionStatus::Working && s.phrase_detected && s.idle_since.is_some() {
-                            s.status = CompletionStatus::Completed;
-                            completed.push((session_id, s.name.clone()));
+                        // Completed: agent responded and is idle past timeout
+                        if s.status == CompletionStatus::Working && !s.has_pending_response && s.idle_since.is_some() {
+                            if let Some(idle_since) = s.idle_since {
+                                if let Some(elapsed) = now.checked_duration_since(idle_since) {
+                                    if elapsed > tracker.hung_timeout {
+                                        s.status = CompletionStatus::Completed;
+                                        completed.push((session_id, s.name.clone()));
+                                    }
+                                }
+                            }
                         }
 
-                        if s.status == CompletionStatus::Working && !s.phrase_detected {
+                        // Follow-up: agent has pending response, idle past timeout, no follow-up sent yet
+                        if s.status == CompletionStatus::Working && s.has_pending_response && !s.followup_sent {
+                            if let Some(idle_since) = s.idle_since {
+                                if let Some(elapsed) = now.checked_duration_since(idle_since) {
+                                    if elapsed > tracker.hung_timeout {
+                                        followups.push((session_id, s.name.clone()));
+                                        // Don't change status here — on_followup callback will set followup_sent
+                                    }
+                                }
+                            }
+                        }
+
+                        // Hung: agent has pending response, follow-up already sent, still idle past timeout
+                        if s.status == CompletionStatus::Working && s.has_pending_response && s.followup_sent {
                             if let Some(idle_since) = s.idle_since {
                                 if let Some(elapsed) = now.checked_duration_since(idle_since) {
                                     if elapsed > tracker.hung_timeout && !s.hung_notified {
@@ -178,6 +217,10 @@ impl CompletionTracker {
                     log::info!("[completion] session {} ({}) completed", &id.to_string()[..8], name);
                     (tracker.on_completed)(id, name);
                 }
+                for (id, name) in followups {
+                    log::info!("[completion] sending follow-up to {} ({})", &id.to_string()[..8], name);
+                    (tracker.on_followup)(id, name);
+                }
                 for (id, name, idle_minutes) in hung {
                     log::warn!("[completion] session {} ({}) appears hung (idle={}min, timeout={}s)", &id.to_string()[..8], name, idle_minutes, tracker.hung_timeout.as_secs());
                     (tracker.on_hung)(id, name, idle_minutes);
@@ -191,7 +234,8 @@ impl Default for SessionCompletionState {
     fn default() -> Self {
         Self {
             name: String::new(),
-            phrase_detected: false,
+            has_pending_response: false,
+            followup_sent: false,
             idle_since: None,
             status: CompletionStatus::Working,
             hung_notified: false,
