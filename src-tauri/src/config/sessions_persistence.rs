@@ -27,6 +27,9 @@ pub struct PersistedSession {
     /// Prefix prepended to the detected branch (e.g., "agentscommander" → "agentscommander/main")
     #[serde(default)]
     pub git_branch_prefix: Option<String>,
+    /// Resolved config directory for the agent's Claude binary
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
 
     // ── Runtime fields (populated during live snapshots, ignored on restore) ──
 
@@ -216,6 +219,7 @@ pub async fn snapshot_sessions(mgr: &SessionManager) -> Vec<PersistedSession> {
             was_active: active_id.as_deref() == Some(&s.id),
             git_branch_source: s.git_branch_source.clone(),
             git_branch_prefix: s.git_branch_prefix.clone(),
+            config_dir: None, // re-resolved on restore from shell command
             // Runtime fields for CLI consumption
             id: Some(s.id.clone()),
             status: Some(s.status.clone()),

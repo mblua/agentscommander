@@ -45,6 +45,11 @@ pub struct Session {
     /// Used by the Telegram bridge to choose JSONL watcher vs PTY pipeline.
     #[serde(default)]
     pub is_claude: bool,
+    /// Resolved config directory for this agent's Claude binary (e.g. ~/.claude, ~/.claude-phi).
+    /// Set at creation time from AgentConfig.configDir or binary-name defaults.
+    /// Used by the JSONL watcher to find the correct project directory.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -79,6 +84,8 @@ pub struct SessionInfo {
     pub token: String,
     #[serde(default)]
     pub is_claude: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_dir: Option<String>,
 }
 
 impl From<&Session> for SessionInfo {
@@ -99,6 +106,7 @@ impl From<&Session> for SessionInfo {
             git_branch_prefix: s.git_branch_prefix.clone(),
             token: s.token.to_string(),
             is_claude: s.is_claude,
+            config_dir: s.config_dir.clone(),
         }
     }
 }

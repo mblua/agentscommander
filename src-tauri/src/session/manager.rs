@@ -53,6 +53,7 @@ impl SessionManager {
             git_branch_prefix,
             token: Uuid::new_v4(),
             is_claude: false,
+            config_dir: None,
         };
 
         self.sessions.write().await.insert(id, session.clone());
@@ -213,6 +214,13 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
             s.is_claude = val;
+        }
+    }
+
+    pub async fn set_config_dir(&self, id: Uuid, dir: Option<String>) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.config_dir = dir;
         }
     }
 

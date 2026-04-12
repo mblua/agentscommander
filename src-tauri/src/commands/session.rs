@@ -73,15 +73,15 @@ pub async fn create_session_inner(
         session.is_claude = true;
     }
 
-    // Auto-inject --continue for Claude agents when prior conversation exists
-    // in the CORRECT config directory for this specific agent/binary.
-    if is_claude && !skip_continue {
-        // Look up the AgentConfig for this agent_id (global then project-level)
+    // Resolve config_dir for Claude sessions — used by --continue and JSONL watcher.
+    // Stored on the Session so secondary paths (restart, telegram_attach) can access it.
+    let config_dir = if is_claude {
         let agent_config: Option<crate::config::settings::AgentConfig> =
             if let Some(ref aid) = agent_id {
                 let settings_state = app.state::<SettingsState>();
                 let cfg = settings_state.read().await;
                 let found = cfg.agents.iter().find(|a| a.id == *aid).cloned();
+                drop(cfg); // BUG 2 fix: release lock before filesystem walk
                 if found.is_some() {
                     found
                 } else {
@@ -90,8 +90,21 @@ pub async fn create_session_inner(
             } else {
                 None
             };
+        resolve_config_dir(agent_config.as_ref(), &shell, &shell_args)
+    } else {
+        None
+    };
 
-        let config_dir = resolve_config_dir(agent_config.as_ref(), &shell, &shell_args);
+    // Persist config_dir on the session
+    if let Some(ref dir) = config_dir {
+        let dir_str = dir.to_string_lossy().to_string();
+        mgr.set_config_dir(id, Some(dir_str.clone())).await;
+        session.config_dir = Some(dir_str);
+    }
+
+    // Auto-inject --continue for Claude agents when prior conversation exists
+    // in the CORRECT config directory for this specific agent/binary.
+    if is_claude && !skip_continue {
 
         let has_prior_conversation = config_dir
             .as_ref()
@@ -391,9 +404,6 @@ pub async fn create_session(
 
     drop(cfg);
 
-    // Clone agent_id before it's moved — needed later for JSONL watcher config_dir resolution
-    let agent_id_for_bridge = agent_id.clone();
-
     let info = create_session_inner(
         &app,
         session_mgr.inner(),
@@ -436,17 +446,7 @@ pub async fn create_session(
                 if let Some(bot) = bot {
                     let pty_arc = pty_mgr.inner().clone();
                     let jsonl_cwd = if info.is_claude { Some(cwd.clone()) } else { None };
-                    let bridge_config_dir = {
-                        let agent_cfg = if let Some(ref aid) = agent_id_for_bridge {
-                            let cfg2 = settings.read().await;
-                            let found = cfg2.agents.iter().find(|a| a.id == *aid).cloned();
-                            drop(cfg2);
-                            if found.is_some() { found } else {
-                                crate::config::project_settings::find_agent_in_project_settings(&cwd, aid)
-                            }
-                        } else { None };
-                        resolve_config_dir(agent_cfg.as_ref(), &info.shell, &info.shell_args)
-                    };
+                    let bridge_config_dir = info.config_dir.as_ref().map(std::path::PathBuf::from);
                     let mut tg = tg_mgr.lock().await;
                     if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone(), jsonl_cwd, bridge_config_dir) {
                         let _ = app.emit("telegram_bridge_attached", bridge_info);
@@ -626,8 +626,7 @@ pub async fn restart_session(
                 if let Some(bot) = bot {
                     let pty_arc = pty_mgr.inner().clone();
                     let jsonl_cwd = if session_info.is_claude { Some(cwd.clone()) } else { None };
-                    // Restart re-uses session's shell — resolve config_dir without agent_id
-                    let bridge_config_dir = resolve_config_dir(None, &session_info.shell, &session_info.shell_args);
+                    let bridge_config_dir = session_info.config_dir.as_ref().map(std::path::PathBuf::from);
                     let mut tg = tg_mgr.lock().await;
                     if let Ok(bridge_info) = tg.attach(new_uuid, &bot, pty_arc, app.clone(), jsonl_cwd, bridge_config_dir) {
                         let _ = app.emit("telegram_bridge_attached", bridge_info);
@@ -935,7 +934,7 @@ pub async fn create_root_agent_session(
                 if let Some(bot) = bot {
                     let pty_arc = pty_mgr.inner().clone();
                     let jsonl_cwd = if info.is_claude { Some(root_agent_path.clone()) } else { None };
-                    let bridge_config_dir = resolve_config_dir(None, &info.shell, &info.shell_args);
+                    let bridge_config_dir = info.config_dir.as_ref().map(std::path::PathBuf::from);
                     let mut tg = tg_mgr.lock().await;
                     if let Ok(bridge_info) = tg.attach(id, &bot, pty_arc, app.clone(), jsonl_cwd, bridge_config_dir) {
                         let _ = app.emit("telegram_bridge_attached", bridge_info);

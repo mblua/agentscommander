@@ -148,6 +148,9 @@ const SettingsModal: Component<{ onClose: () => void }> = (props) => {
           return `Agent "${agent.label || "Unnamed"}": Claude commands must not include --continue or -c`;
         }
       }
+      if (isClaudeBased(agent.command) && !getDefaultConfigDir(agent.command) && !agent.configDir) {
+        return `Agent "${agent.label || "Unnamed"}": custom Claude binary requires a Config Directory (e.g. ~/.claude-phi)`;
+      }
     }
     return null;
   };

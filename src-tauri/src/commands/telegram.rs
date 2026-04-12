@@ -20,8 +20,8 @@ pub async fn telegram_attach(
 ) -> Result<BridgeInfo, String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-    // Look up session to check is_claude flag and shell info for JSONL watcher mode
-    let (jsonl_cwd, session_shell, session_shell_args) = {
+    // Look up session to read is_claude flag and stored config_dir
+    let (jsonl_cwd, bridge_config_dir) = {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
@@ -30,7 +30,8 @@ pub async fn telegram_attach(
         } else {
             None
         };
-        (jcwd, session.shell.clone(), session.shell_args.clone())
+        let cdir = session.config_dir.as_ref().map(std::path::PathBuf::from);
+        (jcwd, cdir)
     };
 
     let cfg = settings.read().await;
@@ -41,8 +42,6 @@ pub async fn telegram_attach(
         .ok_or_else(|| format!("Bot not found: {}", bot_id))?
         .clone();
     drop(cfg);
-
-    let bridge_config_dir = crate::commands::session::resolve_config_dir(None, &session_shell, &session_shell_args);
     let pty_arc = pty_mgr.inner().clone();
     let mut tg = tg_mgr.lock().await;
     let info = tg
