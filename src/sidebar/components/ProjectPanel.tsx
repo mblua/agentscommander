@@ -92,7 +92,21 @@ const ProjectPanel: Component = () => {
   const handleReplicaClick = async (replica: AcAgentReplica, wg: AcWorkgroup) => {
     const existing = replicaSession(wg, replica);
     if (existing) {
-      // Already instantiated — just switch to it
+      if (!isSessionLive(existing)) {
+        // Session exists but PTY has exited — restart it
+        const restarted = await SessionAPI.restart(existing.id);
+        await SessionAPI.switch(restarted.id);
+        if (isTauri) {
+          const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+          const detachedLabel = `terminal-${restarted.id.replace(/-/g, "")}`;
+          const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
+          if (!detachedWin) {
+            await WindowAPI.ensureTerminal();
+          }
+        }
+        return;
+      }
+      // Already instantiated and live — just switch to it
       await SessionAPI.switch(existing.id);
       if (isTauri) {
         const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
@@ -460,7 +474,7 @@ const ProjectPanel: Component = () => {
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
                 const s = session();
-                if (s && isLive()) handleReplicaContextMenu(e, s);
+                if (s) handleReplicaContextMenu(e, s);
               }}
               title={replica.path}
             >
