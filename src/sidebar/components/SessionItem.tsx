@@ -8,6 +8,7 @@ import { sessionsStore } from "../stores/sessions";
 import { settingsStore } from "../../shared/stores/settings";
 import { voiceRecorder, formatRecordingTime } from "../../shared/voice-recorder";
 import OpenAgentModal from "./OpenAgentModal";
+import AgentPickerModal from "./AgentPickerModal";
 
 function statusClass(status: SessionStatus): string {
   if (typeof status === "string") return status;
@@ -20,6 +21,8 @@ const AGENT_BADGES: Record<string, string> = {
   OpenCode: "OC",
   Cursor: "CU",
 };
+
+const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
 
 /** Match a shell command (+ args) to a detected agent name */
 function shellMatchesAgent(shell: string, shellArgs: string[], agent: string): boolean {
@@ -40,9 +43,11 @@ const SessionItem: Component<{
 }> = (props) => {
   const [showBotMenu, setShowBotMenu] = createSignal(false);
   const [showAgentModal, setShowAgentModal] = createSignal(false);
+  const [showCodingAgentPicker, setShowCodingAgentPicker] = createSignal(false);
   const [availableBots, setAvailableBots] = createSignal<TelegramBotConfig[]>([]);
   const [showContextMenu, setShowContextMenu] = createSignal(false);
   const [contextMenuPos, setContextMenuPos] = createSignal({ x: 0, y: 0 });
+  let contextMenuEl: HTMLDivElement | undefined;
 
   const bridge = () => bridgesStore.getBridge(props.session.id);
   const agentBadges = () => {
@@ -157,6 +162,25 @@ const SessionItem: Component<{
 
   onCleanup(cleanupContextMenu);
 
+  const positionContextMenu = (x: number, y: number) => {
+    if (!contextMenuEl) return;
+
+    const { width, height } = contextMenuEl.getBoundingClientRect();
+    const maxX = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerWidth - width - CONTEXT_MENU_VIEWPORT_MARGIN
+    );
+    const maxY = Math.max(
+      CONTEXT_MENU_VIEWPORT_MARGIN,
+      window.innerHeight - height - CONTEXT_MENU_VIEWPORT_MARGIN
+    );
+
+    setContextMenuPos({
+      x: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, x), maxX),
+      y: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, y), maxY),
+    });
+  };
+
   const handleContextMenu = (e: MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -170,19 +194,31 @@ const SessionItem: Component<{
     };
     dismissContextMenu = dismiss;
     setTimeout(() => {
+      positionContextMenu(e.clientX, e.clientY);
       window.addEventListener("click", dismiss);
       window.addEventListener("contextmenu", dismiss);
       window.addEventListener("keydown", dismiss as any);
     });
   };
 
-  const handleRestart = async () => {
+  const restartSession = async (agentId?: string) => {
     setShowContextMenu(false);
+    cleanupContextMenu();
     try {
-      await SessionAPI.restart(props.session.id);
+      await SessionAPI.restart(props.session.id, agentId ? { agentId } : undefined);
     } catch (e) {
       console.error("Failed to restart session:", e);
     }
+  };
+
+  const handleRestart = async () => {
+    await restartSession();
+  };
+
+  const handleCodingAgentRestart = () => {
+    setShowContextMenu(false);
+    cleanupContextMenu();
+    setShowCodingAgentPicker(true);
   };
 
   const handleExcludeClaudeMd = async (e: MouseEvent) => {
@@ -380,10 +416,23 @@ const SessionItem: Component<{
           />
         </Portal>
       )}
+      {showCodingAgentPicker() && (
+        <Portal>
+          <AgentPickerModal
+            sessionName={props.session.name}
+            onSelect={async (agent) => {
+              setShowCodingAgentPicker(false);
+              await restartSession(agent.id);
+            }}
+            onClose={() => setShowCodingAgentPicker(false)}
+          />
+        </Portal>
+      )}
       {showContextMenu() && (
         <Portal>
           <div
             class="session-context-menu"
+            ref={contextMenuEl}
             style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
           >
@@ -392,6 +441,12 @@ const SessionItem: Component<{
               onClick={handleRestart}
             >
               Restart Session
+            </button>
+            <button
+              class="session-context-option"
+              onClick={handleCodingAgentRestart}
+            >
+              Coding Agent
             </button>
             <Show when={hasClaude()}>
               <div class="context-separator" />

@@ -27,6 +27,10 @@ export interface CreateSessionOptions {
   gitBranchPrefix?: string;
 }
 
+export interface RestartSessionOptions {
+  agentId?: string;
+}
+
 export const SessionAPI = {
   create: (opts?: CreateSessionOptions) =>
     transport.invoke<Session>("create_session", {
@@ -41,8 +45,11 @@ export const SessionAPI = {
 
   destroy: (id: string) => transport.invoke<void>("destroy_session", { id }),
 
-  restart: (id: string): Promise<Session> =>
-    transport.invoke<Session>("restart_session", { id }),
+  restart: (id: string, opts?: RestartSessionOptions): Promise<Session> =>
+    transport.invoke<Session>("restart_session", {
+      id,
+      agentId: opts?.agentId ?? null,
+    }),
 
   switch: (id: string) => transport.invoke<void>("switch_session", { id }),
 

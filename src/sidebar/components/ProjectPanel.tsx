@@ -22,6 +22,8 @@ interface PendingLaunch {
   gitBranchPrefix?: string;
 }
 
+const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
+
 /** Strip 'repo-' prefix from a directory name */
 function stripRepoPrefix(name: string): string {
   return name.startsWith("repo-") ? name.slice(5) : name;
@@ -196,7 +198,8 @@ const ProjectPanel: Component = () => {
         const [deleteError, setDeleteError] = createSignal("");
         const [deleteInProgress, setDeleteInProgress] = createSignal(false);
         const [wgCtxMenu, setWgCtxMenu] = createSignal<{ wg: AcWorkgroup; x: number; y: number } | null>(null);
-        const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; x: number; y: number } | null>(null);
+        const [replicaCtxMenu, setReplicaCtxMenu] = createSignal<{ sessionId: string; sessionName: string; x: number; y: number } | null>(null);
+        const [replicaCodingAgentTarget, setReplicaCodingAgentTarget] = createSignal<{ sessionId: string; sessionName: string } | null>(null);
         const [deletingWg, setDeletingWg] = createSignal<AcWorkgroup | null>(null);
         const [wgDeleteError, setWgDeleteError] = createSignal("");
         const [wgDeleteInProgress, setWgDeleteInProgress] = createSignal(false);
@@ -224,6 +227,7 @@ const ProjectPanel: Component = () => {
           return wg ? getActiveReplicasForWg(wg) : [];
         });
 
+        let replicaCtxMenuEl: HTMLDivElement | undefined;
         let dismissCtx: (() => void) | null = null;
 
         const cleanupCtx = () => {
@@ -236,6 +240,40 @@ const ProjectPanel: Component = () => {
         };
 
         onCleanup(cleanupCtx);
+
+        const positionReplicaCtxMenu = (x: number, y: number) => {
+          if (!replicaCtxMenuEl) return;
+
+          const { width, height } = replicaCtxMenuEl.getBoundingClientRect();
+          const maxX = Math.max(
+            CONTEXT_MENU_VIEWPORT_MARGIN,
+            window.innerWidth - width - CONTEXT_MENU_VIEWPORT_MARGIN
+          );
+          const maxY = Math.max(
+            CONTEXT_MENU_VIEWPORT_MARGIN,
+            window.innerHeight - height - CONTEXT_MENU_VIEWPORT_MARGIN
+          );
+
+          setReplicaCtxMenu((current) =>
+            current
+              ? {
+                  ...current,
+                  x: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, x), maxX),
+                  y: Math.min(Math.max(CONTEXT_MENU_VIEWPORT_MARGIN, y), maxY),
+                }
+              : current
+          );
+        };
+
+        const restartReplicaSession = async (sessionId: string, agentId?: string) => {
+          setReplicaCtxMenu(null);
+          cleanupCtx();
+          try {
+            await SessionAPI.restart(sessionId, agentId ? { agentId } : undefined);
+          } catch (e) {
+            console.error("Failed to restart session:", e);
+          }
+        };
 
         const handleProjectContextMenu = (e: MouseEvent) => {
           e.preventDefault();
@@ -314,7 +352,7 @@ const ProjectPanel: Component = () => {
           });
         };
 
-        const handleReplicaContextMenu = (e: MouseEvent, sessionId: string) => {
+        const handleReplicaContextMenu = (e: MouseEvent, session: Session) => {
           e.preventDefault();
           e.stopPropagation();
           cleanupCtx();
@@ -323,7 +361,12 @@ const ProjectPanel: Component = () => {
           setWgCtxMenu(null);
           setAgentCtxMenu(null);
           setAgentsHeaderCtxMenu(null);
-          setReplicaCtxMenu({ sessionId, x: e.clientX, y: e.clientY });
+          setReplicaCtxMenu({
+            sessionId: session.id,
+            sessionName: session.name,
+            x: e.clientX,
+            y: e.clientY,
+          });
           const dismiss = (ev?: Event) => {
             if (ev instanceof KeyboardEvent && ev.key !== "Escape") return;
             setReplicaCtxMenu(null);
@@ -331,6 +374,7 @@ const ProjectPanel: Component = () => {
           };
           dismissCtx = dismiss;
           setTimeout(() => {
+            positionReplicaCtxMenu(e.clientX, e.clientY);
             window.addEventListener("click", dismiss);
             window.addEventListener("contextmenu", dismiss);
             window.addEventListener("keydown", dismiss as any);
@@ -416,7 +460,7 @@ const ProjectPanel: Component = () => {
               onClick={() => handleReplicaClick(replica, wg)}
               onContextMenu={(e) => {
                 const s = session();
-                if (s && isLive()) handleReplicaContextMenu(e, s.id);
+                if (s && isLive()) handleReplicaContextMenu(e, s);
               }}
               title={replica.path}
             >
@@ -999,6 +1043,7 @@ const ProjectPanel: Component = () => {
               <Portal>
                 <div
                   class="session-context-menu"
+                  ref={replicaCtxMenuEl}
                   style={{ left: `${replicaCtxMenu()!.x}px`, top: `${replicaCtxMenu()!.y}px` }}
                   onClick={(e) => e.stopPropagation()}
                 >
@@ -1006,16 +1051,45 @@ const ProjectPanel: Component = () => {
                     class="session-context-option context-option-danger"
                     onClick={async () => {
                       const menu = replicaCtxMenu();
-                      setReplicaCtxMenu(null);
                       if (menu) {
-                        try { await SessionAPI.restart(menu.sessionId); }
-                        catch (e) { console.error("Failed to restart session:", e); }
+                        await restartReplicaSession(menu.sessionId);
                       }
                     }}
                   >
                     Restart Session
                   </button>
+                  <button
+                    class="session-context-option"
+                    onClick={() => {
+                      const menu = replicaCtxMenu();
+                      setReplicaCtxMenu(null);
+                      cleanupCtx();
+                      if (menu) {
+                        setReplicaCodingAgentTarget({
+                          sessionId: menu.sessionId,
+                          sessionName: menu.sessionName,
+                        });
+                      }
+                    }}
+                  >
+                    Coding Agent
+                  </button>
                 </div>
+              </Portal>
+            )}
+            {replicaCodingAgentTarget() && (
+              <Portal>
+                <AgentPickerModal
+                  sessionName={replicaCodingAgentTarget()!.sessionName}
+                  onSelect={async (agent) => {
+                    const target = replicaCodingAgentTarget();
+                    setReplicaCodingAgentTarget(null);
+                    if (target) {
+                      await restartReplicaSession(target.sessionId, agent.id);
+                    }
+                  }}
+                  onClose={() => setReplicaCodingAgentTarget(null)}
+                />
               </Portal>
             )}
 

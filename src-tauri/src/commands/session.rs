@@ -336,20 +336,7 @@ pub async fn create_session(
 
     // If agentId provided and shell not explicitly set, use that agent's command
     let (shell, shell_args, agent_label) = match (&shell, &agent_id) {
-        (None, Some(aid)) => {
-            if let Some(agent) = cfg.agents.iter().find(|a| a.id == *aid) {
-                log::info!("[session] Agent resolved: id={:?}, label={:?}, command={:?}", agent.id, agent.label, agent.command);
-                let parts: Vec<String> = agent.command.split_whitespace().map(|s| s.to_string()).collect();
-                if let Some((cmd, args)) = parts.split_first() {
-                    (cmd.clone(), args.to_vec(), Some(agent.label.clone()))
-                } else {
-                    (cfg.default_shell.clone(), cfg.default_shell_args.clone(), Some(agent.label.clone()))
-                }
-            } else {
-                log::warn!("[session] Agent NOT found for aid={:?}. Falling back to default shell.", aid);
-                (cfg.default_shell.clone(), cfg.default_shell_args.clone(), None)
-            }
-        }
+        (None, Some(aid)) => resolve_agent_command(aid, &cfg),
         _ => {
             let s = shell.unwrap_or_else(|| cfg.default_shell.clone());
             let sa = shell_args.unwrap_or_else(|| cfg.default_shell_args.clone());
@@ -515,6 +502,7 @@ pub async fn restart_session(
     tg_mgr: State<'_, TelegramBridgeState>,
     settings: State<'_, SettingsState>,
     id: String,
+    agent_id: Option<String>,
 ) -> Result<SessionInfo, String> {
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
 
@@ -535,20 +523,30 @@ pub async fn restart_session(
     // 2. Strip auto-injected args (--continue + --append-system-prompt-file and its value)
     let clean_args = crate::config::sessions_persistence::strip_auto_injected_args(&shell, &shell_args);
 
+    let requested_agent_id = agent_id;
+    let (shell, shell_args, agent_label) = if let Some(ref aid) = requested_agent_id {
+        let cfg = settings.read().await;
+        let resolved = resolve_agent_command(aid, &cfg);
+        drop(cfg);
+        resolved
+    } else {
+        (shell, clean_args, None)
+    };
+
     // 3. Destroy the old session (resolves all State<> internally from app)
     destroy_session_inner(&app, uuid).await?;
 
-    // 4. Create new session with same config, skip_continue = true
+    // 4. Create new session with same config, or switch to the selected coding agent.
     let session_info = create_session_inner(
         &app,
         session_mgr.inner(),
         pty_mgr.inner(),
         shell,
-        clean_args,
+        shell_args,
         cwd.clone(),
         Some(name),
-        None,  // agent_id — auto-detection from shell command
-        None,  // agent_label — resolved from settings during creation
+        requested_agent_id,
+        agent_label,
         false, // skip_tooling_save
         git_branch_source,
         git_branch_prefix,
@@ -694,6 +692,37 @@ pub(crate) fn executable_basename(s: &str) -> String {
         .and_then(|s| s.to_str())
         .unwrap_or(s)
         .to_lowercase()
+}
+
+fn resolve_agent_command(agent_id: &str, settings: &AppSettings) -> (String, Vec<String>, Option<String>) {
+    if let Some(agent) = settings.agents.iter().find(|a| a.id == agent_id) {
+        log::info!(
+            "[session] Agent resolved: id={:?}, label={:?}, command={:?}",
+            agent.id,
+            agent.label,
+            agent.command
+        );
+        let parts: Vec<String> = agent.command.split_whitespace().map(|s| s.to_string()).collect();
+        if let Some((cmd, args)) = parts.split_first() {
+            (cmd.clone(), args.to_vec(), Some(agent.label.clone()))
+        } else {
+            (
+                settings.default_shell.clone(),
+                settings.default_shell_args.clone(),
+                Some(agent.label.clone()),
+            )
+        }
+    } else {
+        log::warn!(
+            "[session] Agent NOT found for aid={:?}. Falling back to default shell.",
+            agent_id
+        );
+        (
+            settings.default_shell.clone(),
+            settings.default_shell_args.clone(),
+            None,
+        )
+    }
 }
 
 /// Try to match the shell command against configured agents in settings.
