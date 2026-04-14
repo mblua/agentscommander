@@ -262,7 +262,7 @@ const SessionItem: Component<{
     <div
       class={`session-item session-item-enter ${props.isActive ? "active" : ""} ${isInactive() ? "inactive-member" : ""}`}
       onClick={isInactive() ? undefined : handleClick}
-      onContextMenu={isInactive() ? undefined : handleContextMenu}
+      onContextMenu={handleContextMenu}
     >
       <div
         class={`session-item-status ${isInactive() ? "offline" : props.session.pendingReview ? "pending" : props.session.waitingForInput ? "waiting" : statusClass(props.session.status)}`}
@@ -422,7 +422,28 @@ const SessionItem: Component<{
             sessionName={props.session.name}
             onSelect={async (agent) => {
               setShowCodingAgentPicker(false);
-              await restartSession(agent.id);
+              if (isInactive()) {
+                try {
+                  const newSession = await SessionAPI.create({
+                    cwd: props.session.workingDirectory,
+                    sessionName: props.session.name,
+                    agentId: agent.id,
+                  });
+                  await SessionAPI.switch(newSession.id);
+                  if (isTauri) {
+                    const { WebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+                    const detachedLabel = `terminal-${newSession.id.replace(/-/g, "")}`;
+                    const detachedWin = await WebviewWindow.getByLabel(detachedLabel);
+                    if (!detachedWin) {
+                      await WindowAPI.ensureTerminal();
+                    }
+                  }
+                } catch (e) {
+                  console.error("Failed to launch session:", e);
+                }
+              } else {
+                await restartSession(agent.id);
+              }
             }}
             onClose={() => setShowCodingAgentPicker(false)}
           />
@@ -436,22 +457,37 @@ const SessionItem: Component<{
             style={{ left: `${contextMenuPos().x}px`, top: `${contextMenuPos().y}px` }}
             onClick={(e) => e.stopPropagation()}
           >
-            <button
-              class="session-context-option context-option-danger"
-              onClick={handleRestart}
-            >
-              Restart Session
-            </button>
-            <button
-              class="session-context-option"
-              onClick={handleCodingAgentRestart}
-            >
-              Coding Agent
-            </button>
-            <Show when={hasClaude()}>
-              <div class="context-separator" />
-              <button class="session-context-option" onClick={handleExcludeClaudeMd}>
-                Exclude global CLAUDE.md
+            <Show when={isInactive()} fallback={
+              <>
+                <button
+                  class="session-context-option context-option-danger"
+                  onClick={handleRestart}
+                >
+                  Restart Session
+                </button>
+                <button
+                  class="session-context-option"
+                  onClick={handleCodingAgentRestart}
+                >
+                  Coding Agent
+                </button>
+                <Show when={hasClaude()}>
+                  <div class="context-separator" />
+                  <button class="session-context-option" onClick={handleExcludeClaudeMd}>
+                    Exclude global CLAUDE.md
+                  </button>
+                </Show>
+              </>
+            }>
+              <button
+                class="session-context-option"
+                onClick={() => {
+                  setShowContextMenu(false);
+                  cleanupContextMenu();
+                  setShowCodingAgentPicker(true);
+                }}
+              >
+                Launch Coding Agent
               </button>
             </Show>
           </div>

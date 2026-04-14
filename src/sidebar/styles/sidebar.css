@@ -467,10 +467,11 @@ html, body, #root {
 /* Inactive team member (no active session) */
 .session-item.inactive-member {
   opacity: 0.5;
-  cursor: default;
+  cursor: pointer;
 }
 .session-item.inactive-member:hover {
-  background: transparent;
+  opacity: 0.7;
+  background: var(--bg-hover, rgba(255, 255, 255, 0.03));
 }
 
 /* Agent badges on inactive entries */
