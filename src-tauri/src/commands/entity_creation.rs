@@ -1213,7 +1213,7 @@ async fn git_clone_async(url: &str, target: &Path) -> Result<(), String> {
     const CREATE_NO_WINDOW: u32 = 0x08000000;
 
     let mut cmd = tokio::process::Command::new("git");
-    cmd.args(["clone", "--depth", "1", url])
+    cmd.args(["-c", "core.longpaths=true", "clone", "--depth", "1", url])
         .arg(target.as_os_str());
 
     #[cfg(windows)]
