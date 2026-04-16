@@ -551,6 +551,8 @@ pub fn run() {
                                     ps.shell.clone(),
                                     ps.shell_args.clone(),
                                     ps.working_directory.clone(),
+                                    ps.agent_id.clone(),
+                                    ps.agent_label.clone(),
                                     ps.git_branch_source.clone(),
                                     ps.git_branch_prefix.clone(),
                                 ).await {
@@ -585,8 +587,8 @@ pub fn run() {
                             ps.shell_args.clone(),
                             ps.working_directory.clone(),
                             Some(ps.name.clone()),
-                            None, // No agent_id on restore (auto-detected from shell)
-                            None, // No agent label on restore (auto-detected from shell)
+                            ps.agent_id.clone(),
+                            ps.agent_label.clone(),
                             false, // Persist tooling on restore
                             ps.git_branch_source.clone(),
                             ps.git_branch_prefix.clone(),

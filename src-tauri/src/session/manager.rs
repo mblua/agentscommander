@@ -28,6 +28,8 @@ impl SessionManager {
         shell: String,
         shell_args: Vec<String>,
         working_directory: String,
+        agent_id: Option<String>,
+        agent_label: Option<String>,
         git_branch_source: Option<String>,
         git_branch_prefix: Option<String>,
     ) -> Result<Session, AppError> {
@@ -48,6 +50,8 @@ impl SessionManager {
             waiting_for_input: false,
             pending_review: false,
             last_prompt: None,
+            agent_id,
+            agent_label,
             git_branch: None,
             git_branch_source,
             git_branch_prefix,
@@ -112,7 +116,8 @@ impl SessionManager {
                 if old.status == SessionStatus::Active {
                     log::info!(
                         "[session-state] {} '{}': Active → Running (deactivated)",
-                        &old_id.to_string()[..8], old.name
+                        &old_id.to_string()[..8],
+                        old.name
                     );
                     old.status = SessionStatus::Running;
                 }
@@ -123,7 +128,9 @@ impl SessionManager {
         if let Some(s) = sessions.get_mut(&id) {
             log::info!(
                 "[session-state] {} '{}': {:?} → Active (switched to)",
-                &id.to_string()[..8], s.name, s.status
+                &id.to_string()[..8],
+                s.name,
+                s.status
             );
             s.status = SessionStatus::Active;
         }
@@ -168,7 +175,10 @@ impl SessionManager {
         if let Some(s) = sessions.get_mut(&id) {
             log::info!(
                 "[session-state] {} '{}': {:?} → Exited({})",
-                &id.to_string()[..8], s.name, s.status, code
+                &id.to_string()[..8],
+                s.name,
+                s.status,
+                code
             );
             s.status = SessionStatus::Exited(code);
         }
@@ -189,7 +199,9 @@ impl SessionManager {
         if let Some(s) = sessions.get_mut(&id) {
             log::info!(
                 "[session-state] {} '{}': waiting_for_input {} → true",
-                &id.to_string()[..8], s.name, s.waiting_for_input
+                &id.to_string()[..8],
+                s.name,
+                s.waiting_for_input
             );
             s.waiting_for_input = true;
             if matches!(s.status, SessionStatus::Running) {
@@ -203,7 +215,9 @@ impl SessionManager {
         if let Some(s) = sessions.get_mut(&id) {
             log::info!(
                 "[session-state] {} '{}': waiting_for_input {} → false",
-                &id.to_string()[..8], s.name, s.waiting_for_input
+                &id.to_string()[..8],
+                s.name,
+                s.waiting_for_input
             );
             s.waiting_for_input = false;
             if matches!(s.status, SessionStatus::Idle) {
@@ -233,18 +247,28 @@ impl SessionManager {
         }
     }
 
-    pub async fn get_sessions_directories(&self) -> Vec<(Uuid, String, Option<String>, Option<String>)> {
+    pub async fn get_sessions_directories(
+        &self,
+    ) -> Vec<(Uuid, String, Option<String>, Option<String>)> {
         let sessions = self.sessions.read().await;
         sessions
             .iter()
-            .map(|(id, s)| (*id, s.working_directory.clone(), s.git_branch_source.clone(), s.git_branch_prefix.clone()))
+            .map(|(id, s)| {
+                (
+                    *id,
+                    s.working_directory.clone(),
+                    s.git_branch_source.clone(),
+                    s.git_branch_prefix.clone(),
+                )
+            })
             .collect()
     }
 
     /// Find a session by its display name. Returns its UUID if found.
     pub async fn find_by_name(&self, name: &str) -> Option<Uuid> {
         let sessions = self.sessions.read().await;
-        sessions.iter()
+        sessions
+            .iter()
             .find(|(_, s)| s.name == name)
             .map(|(id, _)| *id)
     }

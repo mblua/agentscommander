@@ -15,26 +15,7 @@ function statusClass(status: SessionStatus): string {
   return "exited";
 }
 
-const AGENT_BADGES: Record<string, string> = {
-  Claude: "CC",
-  Codex: "CX",
-  OpenCode: "OC",
-  Cursor: "CU",
-};
-
 const CONTEXT_MENU_VIEWPORT_MARGIN = 8;
-
-/** Match a shell command (+ args) to a detected agent name */
-function shellMatchesAgent(shell: string, shellArgs: string[], agent: string): boolean {
-  const s = `${shell} ${shellArgs.join(" ")}`.toLowerCase();
-  switch (agent) {
-    case "Claude": return s.includes("claude");
-    case "Codex": return s.includes("codex");
-    case "OpenCode": return s.includes("opencode");
-    case "Cursor": return s.includes("cursor");
-    default: return false;
-  }
-}
 
 const SessionItem: Component<{
   session: Session;
@@ -50,13 +31,12 @@ const SessionItem: Component<{
   let contextMenuEl: HTMLDivElement | undefined;
 
   const bridge = () => bridgesStore.getBridge(props.session.id);
-  const agentBadges = () => {
-    const np = props.session.workingDirectory.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "");
-    const repo = sessionsStore.repos.find((r) =>
-      r.path.replace(/\\/g, "/").toLowerCase().replace(/\/+$/, "") === np
-    );
-    return repo?.agents ?? [];
+  const sessionAgentLabel = () => {
+    if (props.session.agentLabel) return props.session.agentLabel;
+    if (!props.session.agentId) return null;
+    return settingsStore.current?.agents?.find((a) => a.id === props.session.agentId)?.label ?? null;
   };
+  const sessionHasLivePty = () => !isInactive() && typeof props.session.status === "string";
   const isRecording = () => voiceRecorder.recordingSessionId() === props.session.id;
   const isProcessing = () => voiceRecorder.processingSessionId() === props.session.id;
   const isAutoExecuting = () => voiceRecorder.autoExecuteSessionId() === props.session.id;
@@ -318,26 +298,24 @@ const SessionItem: Component<{
         </Show>
 
         <Show when={!isRecording() && !isProcessing() && !isAutoExecuting() && !isTypingWarning() && !voiceRecorder.micError()}>
-          <Show when={agentBadges().length > 0}>
-            <div class="session-item-agent-badges">
-              <For each={agentBadges()}>
-                {(agent) => {
-                  const isRunning = !isInactive() && shellMatchesAgent(props.session.shell, props.session.shellArgs, agent);
-                  return (
-                    <span class={`agent-badge ${isRunning ? "running" : ""}`} data-agent={agent}>
-                      {isRunning ? agent.toUpperCase() : (AGENT_BADGES[agent] || agent)}
-                    </span>
-                  );
-                }}
-              </For>
+          <Show when={sessionAgentLabel() || (!isInactive() && props.session.gitBranch)}>
+            <div class="session-item-meta">
+              <Show when={sessionAgentLabel()}>
+                {(agentLabel) => (
+                  <span
+                    class={`agent-badge ${sessionHasLivePty() ? "running" : ""}`}
+                    data-agent={agentLabel()}
+                  >
+                    {agentLabel()}
+                  </span>
+                )}
+              </Show>
+              <Show when={!isInactive() && props.session.gitBranch}>
+                <div class="session-item-branch" title={props.session.gitBranch!}>
+                  {props.session.gitBranch}
+                </div>
+              </Show>
             </div>
-          </Show>
-          <Show when={!isInactive()}>
-            <Show when={props.session.gitBranch}>
-              <div class="session-item-branch" title={props.session.gitBranch!}>
-                {props.session.gitBranch}
-              </div>
-            </Show>
           </Show>
         </Show>
       </div>

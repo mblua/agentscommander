@@ -40,6 +40,8 @@ function makeInactiveEntry(name: string, path: string): Session {
     waitingForInput: false,
     pendingReview: false,
     lastPrompt: null,
+    agentId: null,
+    agentLabel: null,
     gitBranch: null,
     gitBranchSource: null,
     gitBranchPrefix: null,

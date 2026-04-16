@@ -9,6 +9,8 @@ export interface Session {
   waitingForInput: boolean;
   pendingReview: boolean;
   lastPrompt: string | null;
+  agentId: string | null;
+  agentLabel: string | null;
   gitBranch: string | null;
   gitBranchSource: string | null;
   gitBranchPrefix: string | null;

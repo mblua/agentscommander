@@ -7,7 +7,13 @@ use uuid::Uuid;
 /// Used by session creation (--continue detection) and the JSONL watcher.
 pub fn mangle_cwd_for_claude(cwd: &str) -> String {
     cwd.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '-' { c } else { '-' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '-' {
+                c
+            } else {
+                '-'
+            }
+        })
         .collect()
 }
 
@@ -30,6 +36,10 @@ pub struct Session {
     #[serde(default)]
     pub pending_review: bool,
     pub last_prompt: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_label: Option<String>,
     pub git_branch: Option<String>,
     /// Path to detect git branch from (overrides working_directory when set).
     /// Used for replica sessions where the cwd is the agent dir but we want the repo's branch.
@@ -71,6 +81,10 @@ pub struct SessionInfo {
     #[serde(default)]
     pub pending_review: bool,
     pub last_prompt: Option<String>,
+    #[serde(default)]
+    pub agent_id: Option<String>,
+    #[serde(default)]
+    pub agent_label: Option<String>,
     pub git_branch: Option<String>,
     #[serde(default)]
     pub git_branch_source: Option<String>,
@@ -94,6 +108,8 @@ impl From<&Session> for SessionInfo {
             waiting_for_input: s.waiting_for_input,
             pending_review: false,
             last_prompt: s.last_prompt.clone(),
+            agent_id: s.agent_id.clone(),
+            agent_label: s.agent_label.clone(),
             git_branch: s.git_branch.clone(),
             git_branch_source: s.git_branch_source.clone(),
             git_branch_prefix: s.git_branch_prefix.clone(),

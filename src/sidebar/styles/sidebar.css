@@ -437,6 +437,15 @@ html, body, #root {
   text-overflow: ellipsis;
 }
 
+.session-item-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+  margin-top: 2px;
+}
+
 .session-item-shell {
   font-size: var(--font-size-sm);
   color: var(--sidebar-fg-dim);
@@ -2313,6 +2322,12 @@ html.light-theme .root-agent-avatar {
 .ac-discovery-badge.branch {
   background: rgba(139, 92, 246, 0.15);
   color: #a78bfa;
+  text-transform: none;
+}
+
+.ac-discovery-badge.agent {
+  background: rgba(16, 185, 129, 0.14);
+  color: #34d399;
   text-transform: none;
 }
 

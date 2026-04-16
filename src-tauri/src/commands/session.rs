@@ -206,12 +206,26 @@ pub async fn create_session_inner(
     git_branch_prefix: Option<String>,
     skip_auto_resume: bool,
 ) -> Result<SessionInfo, String> {
+    let (agent_id, agent_label) = {
+        let settings_state = app.state::<SettingsState>();
+        let cfg = settings_state.read().await;
+        resolve_actual_agent(
+            &shell,
+            &shell_args,
+            agent_id.as_deref(),
+            agent_label.as_deref(),
+            &cfg,
+        )
+    };
+
     let mgr = session_mgr.read().await;
     let mut session = mgr
         .create_session(
             shell.clone(),
             shell_args.clone(),
             cwd.clone(),
+            agent_id.clone(),
+            agent_label.clone(),
             git_branch_source,
             git_branch_prefix,
         )
@@ -226,15 +240,6 @@ pub async fn create_session_inner(
     }
 
     let id = session.id;
-
-    // Auto-detect agent from shell command if not explicitly provided
-    let (agent_id, agent_label) = if agent_id.is_some() {
-        (agent_id, agent_label)
-    } else {
-        let settings_state = app.state::<SettingsState>();
-        let cfg = settings_state.read().await;
-        resolve_agent_from_shell(&shell, &shell_args, &cfg)
-    };
 
     // Detect coding agent families so we can materialize provider-specific context files.
     let mut shell_args = shell_args;
@@ -489,14 +494,13 @@ pub async fn create_session_inner(
                 None => {
                     let settings = app.state::<SettingsState>();
                     let cfg = settings.read().await;
-                    cfg.agents
-                        .iter()
-                        .find(|a| a.id == *aid)
-                        .map(|a| a.label.clone())
-                        .unwrap_or_else(|| {
-                            log::warn!("Could not resolve label for agent_id='{}' — defaulting to 'Unknown'", aid);
-                            "Unknown".to_string()
-                        })
+                    resolve_agent_label(aid, &cfg).unwrap_or_else(|| {
+                        log::warn!(
+                            "Could not resolve label for agent_id='{}' — defaulting to 'Unknown'",
+                            aid
+                        );
+                        "Unknown".to_string()
+                    })
                 }
             };
             let session_id_str = id.to_string();
@@ -721,7 +725,16 @@ pub async fn restart_session(
     let uuid = Uuid::parse_str(&id).map_err(|e| e.to_string())?;
 
     // 1. Read config from existing session BEFORE destroying it
-    let (shell, shell_args, cwd, name, git_branch_source, git_branch_prefix) = {
+    let (
+        shell,
+        shell_args,
+        cwd,
+        name,
+        stored_agent_id,
+        stored_agent_label,
+        git_branch_source,
+        git_branch_prefix,
+    ) = {
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
         (
@@ -729,6 +742,8 @@ pub async fn restart_session(
             session.shell_args.clone(),
             session.working_directory.clone(),
             session.name.clone(),
+            session.agent_id.clone(),
+            session.agent_label.clone(),
             session.git_branch_source.clone(),
             session.git_branch_prefix.clone(),
         )
@@ -745,7 +760,7 @@ pub async fn restart_session(
         drop(cfg);
         resolved
     } else {
-        (shell, clean_args, None)
+        (shell, clean_args, stored_agent_label)
     };
 
     // 3. Destroy the old session (resolves all State<> internally from app)
@@ -760,7 +775,7 @@ pub async fn restart_session(
         shell_args,
         cwd.clone(),
         Some(name),
-        requested_agent_id,
+        requested_agent_id.or(stored_agent_id),
         agent_label,
         false, // skip_tooling_save
         git_branch_source,
@@ -954,6 +969,54 @@ fn resolve_agent_command(
     }
 }
 
+fn resolve_agent_label(agent_id: &str, settings: &AppSettings) -> Option<String> {
+    settings
+        .agents
+        .iter()
+        .find(|a| a.id == agent_id)
+        .map(|a| a.label.clone())
+}
+
+fn resolve_actual_agent(
+    shell: &str,
+    shell_args: &[String],
+    requested_agent_id: Option<&str>,
+    requested_agent_label: Option<&str>,
+    settings: &AppSettings,
+) -> (Option<String>, Option<String>) {
+    let detected = resolve_agent_from_shell(shell, shell_args, settings);
+
+    if let Some(agent_id) = requested_agent_id {
+        match detected.0.as_deref() {
+            Some(detected_id) if detected_id == agent_id => {
+                return (
+                    detected.0,
+                    requested_agent_label
+                        .map(ToString::to_string)
+                        .or(detected.1),
+                )
+            }
+            Some(detected_id) => {
+                log::warn!(
+                    "[session] Requested agent_id='{}' did not match final shell-resolved agent '{}'; storing resolved agent instead",
+                    agent_id,
+                    detected_id
+                );
+                return detected;
+            }
+            None => {
+                log::warn!(
+                    "[session] Requested agent_id='{}' did not validate against final launched shell; clearing actual agent metadata",
+                    agent_id
+                );
+                return (None, None);
+            }
+        }
+    }
+
+    detected
+}
+
 /// Try to match the shell command against configured agents in settings.
 /// Returns (Some(agent_id), Some(label)) if a match is found, (None, None) otherwise.
 fn resolve_agent_from_shell(
@@ -1138,7 +1201,31 @@ pub async fn create_root_agent_session(
 
 #[cfg(test)]
 mod tests {
-    use super::inject_codex_resume;
+    use super::{inject_codex_resume, resolve_actual_agent};
+    use crate::config::settings::{AgentConfig, AppSettings};
+
+    fn test_settings() -> AppSettings {
+        let mut settings = AppSettings::default();
+        settings.agents = vec![
+            AgentConfig {
+                id: "claude".to_string(),
+                label: "Claude Code".to_string(),
+                command: "claude".to_string(),
+                color: "#d97706".to_string(),
+                git_pull_before: false,
+                exclude_global_claude_md: false,
+            },
+            AgentConfig {
+                id: "codex".to_string(),
+                label: "Codex".to_string(),
+                command: "codex".to_string(),
+                color: "#10b981".to_string(),
+                git_pull_before: false,
+                exclude_global_claude_md: false,
+            },
+        ];
+        settings
+    }
 
     #[test]
     fn inject_codex_resume_prefixes_direct_codex_args() {
@@ -1279,6 +1366,75 @@ mod tests {
                 "instruction=\"resume later\"".to_string(),
                 "--search".to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn resolve_actual_agent_keeps_requested_agent_when_shell_validates_it() {
+        let settings = test_settings();
+
+        let resolved = resolve_actual_agent(
+            "codex",
+            &["-m".to_string(), "gpt-5".to_string()],
+            Some("codex"),
+            Some("Codex Stable"),
+            &settings,
+        );
+
+        assert_eq!(
+            resolved,
+            (Some("codex".to_string()), Some("Codex Stable".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolve_actual_agent_falls_back_to_detected_label_when_validated_match_has_no_stored_label() {
+        let settings = test_settings();
+
+        let resolved = resolve_actual_agent(
+            "codex",
+            &["-m".to_string(), "gpt-5".to_string()],
+            Some("codex"),
+            None,
+            &settings,
+        );
+
+        assert_eq!(
+            resolved,
+            (Some("codex".to_string()), Some("Codex".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolve_actual_agent_clears_requested_agent_when_shell_is_unresolved() {
+        let settings = test_settings();
+
+        let resolved = resolve_actual_agent(
+            "powershell.exe",
+            &["-NoLogo".to_string()],
+            Some("codex"),
+            Some("Codex"),
+            &settings,
+        );
+
+        assert_eq!(resolved, (None, None));
+    }
+
+    #[test]
+    fn resolve_actual_agent_uses_shell_resolved_agent_on_mismatch() {
+        let settings = test_settings();
+
+        let resolved = resolve_actual_agent(
+            "claude",
+            &[],
+            Some("codex"),
+            Some("Codex"),
+            &settings,
+        );
+
+        assert_eq!(
+            resolved,
+            (Some("claude".to_string()), Some("Claude Code".to_string()))
         );
     }
 }

@@ -411,6 +411,13 @@ const ProjectPanel: Component = () => {
             return name ? (replica.repoBranch ? `${name}/${replica.repoBranch}` : name) : null;
           };
           const session = () => replicaSession(wg, replica);
+          const liveAgentLabel = () => {
+            const s = session();
+            if (!s) return null;
+            if (s.agentLabel) return s.agentLabel;
+            if (!s.agentId) return null;
+            return settingsStore.current?.agents?.find((a) => a.id === s.agentId)?.label ?? null;
+          };
           const isLive = () => isSessionLive(session());
           const bridge = () => { const s = session(); return s ? bridgesStore.getBridge(s.id) : undefined; };
           const isRecording = () => { const s = session(); return s ? voiceRecorder.recordingSessionId() === s.id : false; };
@@ -482,6 +489,9 @@ const ProjectPanel: Component = () => {
                 <div class="ac-discovery-badges">
                   <Show when={branchLabel()}>
                     <span class="ac-discovery-badge branch">{branchLabel()}</span>
+                  </Show>
+                  <Show when={liveAgentLabel()}>
+                    <span class="ac-discovery-badge agent">{liveAgentLabel()}</span>
                   </Show>
                   <Show when={isCoord()}>
                     <span class="ac-discovery-badge coord">coordinator</span>
