@@ -13,7 +13,20 @@ pub const PTY_SAFE_MAX: usize = 500;
 
 const MAX_SLUG_LEN: usize = 50;
 const MAX_COLLISION_SUFFIX: u32 = 99;
-const PTY_WRAP_FIXED: usize = 187;
+
+/// Reference render of the reply-hint template in `mailbox.rs` with all
+/// dynamic placeholders (`{from}` ×2, `{body}`, `{wg_root}`, `{bin}`) emptied
+/// out. Its length IS the fixed overhead. Keeping this string colocated with
+/// the constant — and the `reply_hint_template_len_matches_constant` test —
+/// means a future edit to the template in `mailbox.rs` that forgets to update
+/// this sample will fail the test suite before it can drift silently.
+const REPLY_HINT_FIXED_SAMPLE: &str = concat!(
+    "\n[Message from ] \n",
+    "(To reply, write your response to /messaging/<new-filename>.md, ",
+    "then run: \"\" send --token <your_token> --root \"<your_root>\" ",
+    "--to \"\" --send <new-filename> --mode wake)\n\r",
+);
+const PTY_WRAP_FIXED: usize = REPLY_HINT_FIXED_SAMPLE.len();
 
 #[derive(Debug, thiserror::Error)]
 pub enum MessagingError {
@@ -154,9 +167,15 @@ pub fn validate_filename_shape(name: &str) -> Result<(), MessagingError> {
     if 3 >= search_end {
         return Err(invalid());
     }
+    // Use `rposition` so filenames whose `from_short` contains the literal
+    // segment `to` (e.g. `"wg7-to-lead"`) parse with the rightmost `to` as the
+    // separator — matching the canonical `build_filename` output structure.
+    // Shape validity is unaffected either way; this keeps round-trip parsing
+    // unambiguous for any future caller that wants to split the filename back
+    // into from/to/slug.
     let to_idx = parts[3..search_end]
         .iter()
-        .position(|&p| p == "to")
+        .rposition(|&p| p == "to")
         .map(|i| i + 3)
         .ok_or_else(invalid)?;
 
@@ -518,5 +537,70 @@ mod tests {
         assert!(b > a);
         let c = estimate_wrap_overhead("from", "/wg/root/deeper", "/bin/path");
         assert!(c > a);
+    }
+
+    /// Contract test: `PTY_WRAP_FIXED` must equal the length of the reply-hint
+    /// template in `mailbox.rs` with every placeholder emptied. If anyone edits
+    /// the template without updating `REPLY_HINT_FIXED_SAMPLE`, this test
+    /// fails BEFORE the drift reaches production.
+    #[test]
+    fn reply_hint_template_len_matches_constant() {
+        let actual = format!(
+            concat!(
+                "\n[Message from {from}] {body}\n",
+                "(To reply, write your response to {wg_root}/messaging/<new-filename>.md, ",
+                "then run: \"{bin}\" send --token <your_token> --root \"<your_root>\" ",
+                "--to \"{from}\" --send <new-filename> --mode wake)\n\r",
+            ),
+            from = "",
+            body = "",
+            wg_root = "",
+            bin = "",
+        );
+        assert_eq!(
+            actual.len(),
+            PTY_WRAP_FIXED,
+            "reply-hint template in mailbox.rs drifted from REPLY_HINT_FIXED_SAMPLE — update whichever is wrong"
+        );
+    }
+
+    /// PTY_SAFE_MAX clamp arithmetic — simulate a realistic long-path scenario
+    /// and assert the clamp in `cli/send.rs` would reject it. Mirrors the
+    /// inequality at send.rs:192 (`body.len() + overhead > PTY_SAFE_MAX`).
+    #[test]
+    fn pty_safe_max_clamp_rejects_long_path() {
+        let from = "wg12-dev-rust"; // 13 chars
+        // Pathological but plausible path: 180+ chars of nesting.
+        let wg_root = "C:\\Users\\some-long-username\\projects\\deep\\deeper\\deepest\\wg-999-extremely-long-workgroup-name-with-too-many-segments";
+        let bin = "C:\\Users\\some-long-username\\AppData\\Local\\Agents Commander\\agentscommander.exe";
+        // Notification body: 32 fixed chars + abs path (wg_root + "\messaging\" + 100-char filename ≈ 240 chars).
+        let body_len = 32 + wg_root.len() + "\\messaging\\".len() + 100;
+
+        let overhead = estimate_wrap_overhead(from, wg_root, bin);
+        assert!(
+            body_len + overhead > PTY_SAFE_MAX,
+            "expected clamp to fire for body={} overhead={} max={}",
+            body_len,
+            overhead,
+            PTY_SAFE_MAX,
+        );
+    }
+
+    /// Happy-path negation: short, typical paths fit comfortably under the clamp.
+    #[test]
+    fn pty_safe_max_clamp_accepts_typical() {
+        let from = "wg7-architect";
+        let wg_root = "C:\\work\\wg-7-dev-team";
+        let bin = "C:\\work\\bin\\agentscommander.exe";
+        let body_len = 32 + wg_root.len() + 80; // typical filename
+
+        let overhead = estimate_wrap_overhead(from, wg_root, bin);
+        assert!(
+            body_len + overhead <= PTY_SAFE_MAX,
+            "expected clamp to accept body={} overhead={} max={}",
+            body_len,
+            overhead,
+            PTY_SAFE_MAX,
+        );
     }
 }

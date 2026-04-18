@@ -1001,14 +1001,20 @@ impl MailboxPoller {
         app: &tauri::AppHandle,
         session_id: Uuid,
     ) -> Option<String> {
-        let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-        let mgr = session_mgr.read().await;
-        let sessions = mgr.list_sessions().await;
-        let session = sessions.iter().find(|s| s.id == session_id.to_string())?;
-        let wg_root = crate::phone::messaging::workgroup_root(std::path::Path::new(
-            &session.working_directory,
-        ))
-        .ok()?;
+        // Extract the session's working_directory quickly then drop the
+        // SessionManager read-guard before doing any sync path work. Keeps
+        // the lock window as short as possible.
+        let working_dir = {
+            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
+            let mgr = session_mgr.read().await;
+            let sessions = mgr.list_sessions().await;
+            sessions
+                .iter()
+                .find(|s| s.id == session_id.to_string())
+                .map(|s| s.working_directory.clone())?
+        };
+        let wg_root =
+            crate::phone::messaging::workgroup_root(std::path::Path::new(&working_dir)).ok()?;
         let s = wg_root.to_string_lossy();
         Some(s.trim_start_matches(r"\\?\").to_string())
     }
