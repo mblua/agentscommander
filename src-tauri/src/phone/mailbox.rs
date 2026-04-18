@@ -378,17 +378,18 @@ impl MailboxPoller {
         } else {
             msg.mode.as_str()
         };
-        match mode {
-            "wake" => self.deliver_wake(app, &msg).await?,
-            "wake-and-sleep" => self.deliver_wake_and_sleep(app, &msg).await?,
-            _ => {
-                return self.reject_message(
+        // Only `wake` is supported. Defensive check for malformed outbox files
+        // that might arrive from external (root-token) write paths.
+        if mode != "wake" {
+            return self
+                .reject_message(
                     path,
                     &msg,
-                    &format!("Unsupported delivery mode '{}'. Valid: wake, wake-and-sleep", mode),
-                ).await;
-            }
+                    &format!("Unsupported delivery mode '{}'. Valid: wake", mode),
+                )
+                .await;
         }
+        self.deliver_wake(app, &msg).await?;
 
         // Move to delivered/ with token stripped
         self.move_to_delivered(path, &msg).await
@@ -545,181 +546,13 @@ impl MailboxPoller {
         self.inject_into_pty(app, session_id, msg, true).await
     }
 
-    /// Deliver mode: wake-and-sleep — spawn temporary session if needed, inject, wait for idle, kill.
-    async fn deliver_wake_and_sleep(
-        &self,
-        app: &tauri::AppHandle,
-        msg: &OutboxMessage,
-    ) -> Result<(), String> {
-        // Check if there's already an active session for this destination
-        if let Some(session_id) = self.find_active_session(app, &msg.to).await {
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            let sessions = mgr.list_sessions().await;
-            let session = sessions.iter().find(|s| s.id == session_id.to_string());
-
-            if let Some(s) = session {
-                if s.waiting_for_input {
-                    // Existing session is interactive — no response markers
-                    return self.inject_into_pty(app, session_id, msg, true).await;
-                }
-                if matches!(s.status, SessionStatus::Exited(_)) {
-                    log::info!(
-                        "[mailbox] wake-and-sleep: session {} is Exited, destroying before respawn",
-                        session_id
-                    );
-                    // Drop read lock before destroy call — release promptly (destroy acquires its own read lock)
-                    drop(mgr);
-                    if let Err(e) =
-                        crate::commands::session::destroy_session_inner(app, session_id).await
-                    {
-                        log::error!(
-                            "[mailbox] wake-and-sleep: failed to destroy exited session {}: {}",
-                            session_id,
-                            e
-                        );
-                    }
-                    // Fall through to spawn temporary session
-                    // (intentional: Exited persistent session is replaced by a temp session for this delivery)
-                } else {
-                    // Session exists and is truly busy (Running, not waiting for input)
-                    return Err(
-                        "Destination agent session exists but is busy (not idle)".to_string()
-                    );
-                }
-            } else {
-                drop(mgr);
-            }
-        }
-
-        // No active session (or Exited session was destroyed) — spawn a temporary one.
-        log::info!(
-            "[mailbox] wake-and-sleep: no active session for '{}', spawning temporary session",
-            msg.to
-        );
-        // Determine which agent CLI to use.
-        let agent_command = self.resolve_agent_command(app, msg).await;
-
-        if let Some((shell, shell_args)) = agent_command {
-            let dest_path = self.resolve_repo_path(&msg.to, app).await;
-            let cwd = dest_path.unwrap_or_else(|| msg.to.clone());
-
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
-
-            match crate::commands::session::create_session_inner(
-                app,
-                session_mgr.inner(),
-                pty_mgr.inner(),
-                shell,
-                shell_args,
-                cwd,
-                Some(format!(
-                    "{} {}",
-                    crate::session::session::TEMP_SESSION_PREFIX,
-                    msg.to
-                )),
-                None,  // Temp session — don't update lastCodingAgent
-                None,  // No agent label for temp sessions
-                true,  // Skip tooling save for temp sessions
-                None,  // git_branch_source
-                None,  // git_branch_prefix
-                false, // skip_auto_resume
-            )
-            .await
-            {
-                Ok(info) => {
-                    let session_id = Uuid::parse_str(&info.id)
-                        .map_err(|e| format!("Failed to parse session id: {}", e))?;
-
-                    // Wait for agent boot + init prompt injection (init fires at 3s, needs time to process)
-                    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
-
-                    // Inject the message — non-interactive one-shot, use markers if get_output
-                    self.inject_into_pty(app, session_id, msg, false).await?;
-
-                    // Schedule cleanup: wait for idle then destroy session
-                    let app_clone = app.clone();
-                    let session_id_clone = session_id;
-                    tauri::async_runtime::spawn(async move {
-                        // Wait up to 10 minutes for the agent to finish
-                        let timeout = std::time::Duration::from_secs(600);
-                        let poll = std::time::Duration::from_secs(2);
-                        let start = std::time::Instant::now();
-
-                        loop {
-                            if start.elapsed() >= timeout {
-                                log::warn!(
-                                    "wake-and-sleep timeout for session {}",
-                                    session_id_clone
-                                );
-                                break;
-                            }
-
-                            let session_mgr =
-                                app_clone.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-                            let mgr = session_mgr.read().await;
-                            let sessions = mgr.list_sessions().await;
-
-                            if let Some(s) = sessions
-                                .iter()
-                                .find(|s| s.id == session_id_clone.to_string())
-                            {
-                                if s.waiting_for_input {
-                                    // Agent is done — cleanup
-                                    break;
-                                }
-                            } else {
-                                // Session already gone
-                                return;
-                            }
-                            drop(mgr);
-                            tokio::time::sleep(poll).await;
-                        }
-
-                        // Destroy the temporary session via shared destroy logic
-                        match crate::commands::session::destroy_session_inner(
-                            &app_clone,
-                            session_id_clone,
-                        )
-                        .await
-                        {
-                            Ok(()) => log::info!(
-                                "wake-and-sleep: destroyed temp session {}",
-                                session_id_clone
-                            ),
-                            Err(e) => log::warn!(
-                                "wake-and-sleep: failed to destroy temp session {}: {}",
-                                session_id_clone,
-                                e
-                            ),
-                        }
-                    });
-
-                    Ok(())
-                }
-                Err(e) => {
-                    log::warn!("wake-and-sleep: failed to spawn temp session: {}", e);
-                    Err(format!(
-                        "Failed to spawn temporary session for delivery: {}",
-                        e
-                    ))
-                }
-            }
-        } else {
-            log::warn!("wake-and-sleep: no agent command found for {}", msg.to);
-            Err(format!(
-                "No agent command resolved for '{}' — cannot spawn temporary session",
-                msg.to
-            ))
-        }
-    }
-
     /// Inject a message into a session's PTY stdin.
-    /// `interactive` = true means the session is a live interactive agent (wake/active-only).
-    ///   → plain message only, no response markers, no watcher.
-    /// `interactive` = false means it's a non-interactive one-shot (wake-and-sleep).
-    ///   → if get_output, include response marker instructions and register watcher.
+    /// `interactive` = true (all remaining callers): live interactive `wake`
+    /// delivery — plain message only, no response markers, no watcher.
+    /// `interactive` = false is currently unreachable (the former
+    /// `wake-and-sleep` non-interactive path was removed in 0.7.0). The
+    /// `use_markers=true` branch below is retained for future non-interactive
+    /// consumers; see _plans/delete-modes.md §2.4.
     async fn inject_into_pty(
         &self,
         app: &tauri::AppHandle,
@@ -1356,7 +1189,8 @@ impl MailboxPoller {
         crate::config::teams::can_communicate(from, to, discovered_teams)
     }
 
-    /// Resolve which agent CLI to use for wake-and-sleep mode.
+    /// Resolve which agent CLI to spawn when `deliver_wake` needs a new
+    /// persistent session for the destination agent.
     async fn resolve_agent_command(
         &self,
         app: &tauri::AppHandle,

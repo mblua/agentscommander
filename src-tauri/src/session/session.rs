@@ -17,8 +17,10 @@ pub fn mangle_cwd_for_claude(cwd: &str) -> String {
         .collect()
 }
 
-/// Prefix used for temporary sessions spawned by wake-and-sleep delivery.
-/// These sessions are ephemeral and must never be persisted across restarts.
+/// Prefix used historically by wake-and-sleep delivery (removed in 0.7.0).
+/// Retained for defensive purge of legacy temp sessions persisted under
+/// older versions, and as a sort-key tiebreaker in `find_active_session`
+/// (non-temp sessions preferred).
 pub const TEMP_SESSION_PREFIX: &str = "[temp]";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

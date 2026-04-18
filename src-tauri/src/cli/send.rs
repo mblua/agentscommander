@@ -8,8 +8,7 @@ use crate::phone::types::OutboxMessage;
 #[derive(Args)]
 #[command(after_help = "\
 DELIVERY MODES:\n  \
-  wake            Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.\n  \
-  wake-and-sleep  Spawn a temporary session for the destination agent, inject the message, destroy when done.\n\n\
+  wake            Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.\n\n\
 ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on team \
 membership and coordinator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
 DISCOVERY: Use `list-peers` to get valid agent names for --to. The \"name\" field in the JSON output \
@@ -47,7 +46,8 @@ pub struct SendArgs {
     #[arg(long)]
     pub command: Option<String>,
 
-    /// Agent CLI to use for wake-and-sleep mode
+    /// Agent CLI to use when `wake` spawns a new persistent session for
+    /// the destination. `auto` picks the session's saved `lastCodingAgent`.
     #[arg(long, default_value = "auto")]
     pub agent: String,
 
@@ -106,7 +106,7 @@ pub fn execute(args: SendArgs) -> i32 {
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
 
     // Validate mode — "queue" is no longer supported
-    let valid_modes = ["wake", "wake-and-sleep"];
+    let valid_modes = ["wake"];
     if !valid_modes.contains(&args.mode.as_str()) {
         eprintln!(
             "Error: invalid mode '{}'. Valid: {}",
