@@ -430,6 +430,13 @@ Messaging is **file-based** to avoid PTY truncation. Two steps:
 "<YOUR_BINARY_PATH>" send --token <YOUR_TOKEN> --root "<YOUR_ROOT>" --to "<agent_name>" --send <filename> --mode wake
 ```
 
+**IMPORTANT: `--send` takes the filename ONLY — never a path.**
+
+- BAD:  `--send "C:\...\messaging\20260419-143052-wg3-you-to-wg3-peer-hello.md"`
+- GOOD: `--send "20260419-143052-wg3-you-to-wg3-peer-hello.md"`
+
+The CLI resolves the filename against `<workgroup-root>/messaging/` automatically. Passing a path triggers `filename '...' contains path separators or traversal`.
+
 The recipient receives a short notification pointing to your file's absolute
 path and reads the content via filesystem. Do NOT use `--get-output` — it
 blocks and is only for non-interactive sessions. After sending, stay idle and
@@ -451,4 +458,17 @@ fn is_replica_agent_dir(cwd: &str) -> bool {
         .and_then(|name| name.to_str())
         .map(|name| name.starts_with("__agent_"))
         .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_context_embeds_filename_only_warning() {
+        let out = default_context("C:/tmp/fake-agent");
+        assert!(out.contains("filename ONLY"));
+        assert!(out.contains("BAD:"));
+        assert!(out.contains("GOOD:"));
+    }
 }

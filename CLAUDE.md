@@ -54,7 +54,9 @@ agentscommander.exe send --token <TOKEN> --root "<CWD>" --to "<agent_name>" --se
 - `--token`: your session token (provided in the Session Init block injected into your console)
 - `--root`: your working directory (must be under a `wg-<N>-*` ancestor)
 - `--to`: target agent name — **must be verified first** via `list-peers` or `teams.json`
-- `--send`: filename (not path) of a file you already wrote under `<workgroup-root>/messaging/`
+- `--send`: **filename ONLY, never a path**. The CLI resolves it against `<workgroup-root>/messaging/` automatically.
+  - BAD:  `--send "C:\...\messaging\20260419-...-hello.md"`
+  - GOOD: `--send "20260419-...-hello.md"`
 - `--mode wake`: fire-and-forget, do NOT use `--get-output` (blocks interactive sessions)
 
 The recipient gets a short notification pointing at the file's absolute path and reads the content via filesystem.
