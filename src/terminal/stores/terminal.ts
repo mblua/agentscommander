@@ -5,10 +5,6 @@ const [activeSessionName, setActiveSessionName] = createSignal<string>("");
 const [activeShell, setActiveShell] = createSignal<string>("");
 const [activeShellArgs, setActiveShellArgs] = createSignal<string[]>([]);
 const [activeWorkingDirectory, setActiveWorkingDirectory] = createSignal<string>('');
-const [termSize, setTermSize] = createSignal<{ cols: number; rows: number }>({
-  cols: 0,
-  rows: 0,
-});
 
 export const terminalStore = {
   get activeSessionId() {
@@ -25,9 +21,6 @@ export const terminalStore = {
   },
   get activeWorkingDirectory() {
     return activeWorkingDirectory();
-  },
-  get termSize() {
-    return termSize();
   },
 
   /**
@@ -49,9 +42,5 @@ export const terminalStore = {
     if (shell !== undefined) setActiveShell(shell);
     if (shellArgs !== undefined) setActiveShellArgs(shellArgs);
     if (workingDirectory !== undefined) setActiveWorkingDirectory(workingDirectory);
-  },
-
-  setTermSize(cols: number, rows: number) {
-    setTermSize({ cols, rows });
   },
 };

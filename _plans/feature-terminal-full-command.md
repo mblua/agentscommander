@@ -403,7 +403,7 @@ version = "0.7.4"
 - Do NOT change `src/shared/types.ts`. `Session.shellArgs: string[]` is already in place (line 11).
 - Do NOT touch anything under `src/sidebar/**`. The sidebar's session list does not render the launch command, and that behavior is explicitly out of scope.
 - Do NOT add a custom tooltip component. Native `title` attribute is specified and sufficient.
-- Do NOT rework `setTermSize` or its call sites. The method stays in the store (it's still used by `TerminalView`'s fit logic for PTY resize); only the StatusBar's render of `termSize.cols x rows` is removed.
+- **[RETROSPECTIVE — grinch §10.1]** An earlier revision of this plan asserted that `setTermSize` must stay because `TerminalView` still uses it for PTY resize. That was false: `TerminalView.tsx` passes `cols`/`rows` directly to `PtyAPI.resize()` from the xterm `onResize` event (and from the fit addon inside `syncViewport`) and never reads the store signal. After the StatusBar stopped rendering `cols x rows`, the entire `termSize` signal + setter became dead code and was removed in a follow-up commit. Future reviewers: always grep for readers before trusting "still used for X" claims.
 - Do NOT bump `package.json` version. It's currently out-of-sync (`0.7.1`) but not used at runtime, and fixing it is out of scope for this feature.
 - Do NOT create new CSS tokens / variables / theme files. Reuse `.status-bar-accent` + new `.status-bar-command` modifier only.
 - Do NOT refactor surrounding code in the touched files. Minimum-diff principle applies.
