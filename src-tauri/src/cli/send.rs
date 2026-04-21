@@ -1,23 +1,28 @@
-use clap::Args;
 use std::path::PathBuf;
+
+use clap::Args;
 use uuid::Uuid;
 
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
+
+use super::task_resolution;
 
 #[derive(Args)]
 #[command(after_help = "\
 DELIVERY MODES:\n  \
   wake            Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.\n  \
   active-only     Inject into PTY if the destination agent is actively running (not idle). Reject otherwise.\n  \
-  wake-and-sleep  Spawn a temporary session for the destination agent, inject the message, destroy when done.\n\n\
+  wake-and-sleep  Spawn a temporary session for the destination agent, inject the notification, destroy when done.\n\n\
+MESSAGE TRANSPORT: `--message` accepts only a GitHub issue comment URL in this format:\n  \
+  https://github.com/<owner>/<repo>/issues/<number>#issuecomment-<comment_id>\n  \
+Long-form message content must be posted in GitHub first. `send` only notifies the receiver about the comment URL.\n\n\
 ROUTING: Before delivery, the CLI validates that the sender can reach the destination based on team \
 membership and coordinator rules (teams.json). If routing fails, the CLI exits immediately with code 1.\n\n\
 DISCOVERY: Use `list-peers` to get valid agent names for --to. The \"name\" field in the JSON output \
 is the value to use.\n\n\
-QUOTING: If your message contains quotes, special characters, or spans multiple lines, use --message-file \
-instead of --message. Write the message to a temporary file and pass its path. This avoids shell parsing \
-issues, especially in PowerShell.")]
+TASKS: Message delivery resolves the sender workgroup from --root and requires exactly one active \
+task record under sibling repo-*/_plans/tasks/*.json.")]
 pub struct SendArgs {
     /// Session token for authentication (from '# === Session Credentials ===' block)
     #[arg(long)]
@@ -27,22 +32,13 @@ pub struct SendArgs {
     #[arg(long)]
     pub to: String,
 
-    /// Message body. Required unless --command or --message-file is used
-    #[arg(long, default_value = "")]
-    pub message: String,
-
-    /// Path to a file containing the message body. Shell-safe alternative to --message:
-    /// avoids quoting issues in PowerShell and other shells. Takes priority over --message
+    /// GitHub issue comment URL. Required unless --command is used.
     #[arg(long)]
-    pub message_file: Option<String>,
+    pub message: Option<String>,
 
     /// Delivery mode (see DELIVERY MODES below)
     #[arg(long, default_value = "wake")]
     pub mode: String,
-
-    /// Wait for and return the agent's response (blocks until reply or --timeout)
-    #[arg(long)]
-    pub get_output: bool,
 
     /// Remote command to execute on the agent's PTY [possible values: clear, compact].
     /// The agent must be idle. Cannot be combined with --message
@@ -53,38 +49,13 @@ pub struct SendArgs {
     #[arg(long, default_value = "auto")]
     pub agent: String,
 
-    /// Timeout in seconds for --get-output
-    #[arg(long, default_value = "300")]
-    pub timeout: u64,
-
     /// Agent root directory (required). Your working directory — used to derive your agent name
     #[arg(long)]
     pub root: Option<String>,
 
-    /// Write message to a specific outbox directory instead of <root>/<local-dir>/outbox/
+    /// Write command-only outbox traffic to a specific directory instead of <root>/<local-dir>/outbox/
     #[arg(long)]
     pub outbox: Option<String>,
-}
-
-/// Strip `__agent_` and `_agent_` prefixes from directory names.
-pub(crate) fn strip_agent_prefix(name: &str) -> &str {
-    name.strip_prefix("__agent_")
-        .or_else(|| name.strip_prefix("_agent_"))
-        .unwrap_or(name)
-}
-
-/// Derive agent name from a path: last two components -> "parent/folder",
-/// stripping `__agent_`/`_agent_` prefixes for consistent WG replica naming.
-pub(crate) fn agent_name_from_root(root: &str) -> String {
-    let normalized = root.replace('\\', "/");
-    let components: Vec<&str> = normalized.split('/').filter(|s| !s.is_empty()).collect();
-    if components.len() >= 2 {
-        let parent = components[components.len() - 2];
-        let last = strip_agent_prefix(components[components.len() - 1]);
-        format!("{}/{}", parent, last)
-    } else {
-        normalized
-    }
 }
 
 pub fn execute(args: SendArgs) -> i32 {
@@ -95,7 +66,7 @@ pub fn execute(args: SendArgs) -> i32 {
             return 1;
         }
     };
-    // Validate token before proceeding
+
     let is_root = match crate::cli::validate_cli_token(&args.token) {
         Ok((_token, root)) => root,
         Err(msg) => {
@@ -104,10 +75,9 @@ pub fn execute(args: SendArgs) -> i32 {
         }
     };
 
-    let sender = agent_name_from_root(&root);
+    let sender = crate::cli::agent_name_from_root(&root);
     let ac_dir = PathBuf::from(&root).join(crate::config::agent_local_dir_name());
 
-    // Validate mode — "queue" is no longer supported
     let valid_modes = ["active-only", "wake", "wake-and-sleep"];
     if !valid_modes.contains(&args.mode.as_str()) {
         eprintln!(
@@ -118,42 +88,36 @@ pub fn execute(args: SendArgs) -> i32 {
         return 1;
     }
 
-    // ── Pre-validate routing ──────────────────────────────────────────────
-
     if !is_root {
-        // Load discovered teams and check if sender can reach destination BEFORE
-        // writing to outbox. Fail immediately with a clear error if not.
         let discovered = teams::discover_teams();
         if !teams::can_communicate(&sender, &args.to, &discovered) {
             eprintln!(
-                "Error: routing rejected — '{}' cannot reach '{}'. \
-                 Check team membership and coordinator rules.",
+                "Error: routing rejected — '{}' cannot reach '{}'. Check team membership and coordinator rules.",
                 sender, args.to
             );
             return 1;
         }
     }
 
-    // Resolve message body: --message-file takes priority over --message
-    let message_body = if let Some(ref file_path) = args.message_file {
-        match std::fs::read_to_string(file_path) {
-            Ok(content) => content.trim_end().to_string(),
-            Err(e) => {
-                eprintln!("Error: failed to read message file '{}': {}", file_path, e);
-                return 1;
-            }
-        }
-    } else {
-        args.message.clone()
-    };
+    let message = args
+        .message
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
 
-    // Require at least --message/--message-file or --command
-    if message_body.is_empty() && args.command.is_none() {
-        eprintln!("Error: --message, --message-file, or --command is required");
-        return 1;
+    match (message.is_some(), args.command.is_some()) {
+        (false, false) => {
+            eprintln!("Error: --message or --command is required");
+            return 1;
+        }
+        (true, true) => {
+            eprintln!("Error: --command cannot be combined with --message");
+            return 1;
+        }
+        _ => {}
     }
 
-    // Validate --command if present
     const ALLOWED_COMMANDS: &[&str] = &["clear", "compact"];
     if let Some(ref cmd) = args.command {
         if !ALLOWED_COMMANDS.contains(&cmd.as_str()) {
@@ -166,22 +130,38 @@ pub fn execute(args: SendArgs) -> i32 {
         }
     }
 
-    let msg_id = Uuid::new_v4().to_string();
-    let request_id = if args.get_output {
-        Some(Uuid::new_v4().to_string())
+    let task_context = if let Some(ref comment_url) = message {
+        if args.outbox.is_some() {
+            eprintln!(
+                "Error: --outbox cannot be used with --message during the GitHub comment URL migration"
+            );
+            return 1;
+        }
+
+        match task_resolution::resolve_message_context(&root, comment_url) {
+            Ok(context) => Some(context),
+            Err(err) => {
+                eprintln!("Error: {}", err);
+                return 1;
+            }
+        }
     } else {
         None
     };
 
+    let msg_id = Uuid::new_v4().to_string();
     let message = OutboxMessage {
         id: msg_id.clone(),
         token: args.token,
         from: sender.clone(),
         to: args.to.clone(),
-        body: message_body,
+        comment_url: task_context
+            .as_ref()
+            .map(|ctx| ctx.comment.html_url.clone()),
+        legacy_body: None,
         mode: args.mode,
-        get_output: args.get_output,
-        request_id: request_id.clone(),
+        legacy_get_output: false,
+        request_id: None,
         sender_agent: None,
         preferred_agent: args.agent,
         priority: "normal".to_string(),
@@ -191,13 +171,25 @@ pub fn execute(args: SendArgs) -> i32 {
         target: None,
         force: None,
         timeout_secs: None,
+        task_id: task_context.as_ref().map(|ctx| ctx.task.id.clone()),
+        task_summary: task_context.as_ref().map(|ctx| ctx.task.summary.clone()),
+        github_owner: task_context
+            .as_ref()
+            .map(|ctx| ctx.task.github.owner.clone()),
+        github_repo: task_context
+            .as_ref()
+            .map(|ctx| ctx.task.github.repo.clone()),
+        github_issue_number: task_context
+            .as_ref()
+            .map(|ctx| ctx.task.github.issue_number),
+        messaging_mode: task_context
+            .as_ref()
+            .map(|ctx| ctx.task.messaging.mode.clone()),
     };
 
-    // Write to --outbox if specified, app outbox if root/master token, otherwise <root>/<local_dir>/outbox/
     let outbox_dir = if let Some(ref outbox_path) = args.outbox {
         PathBuf::from(outbox_path)
     } else if is_root {
-        // Root/master token: use the app outbox so the MailboxPoller always finds it
         let app_outbox = crate::config::config_dir()
             .map(|d| d.join("app-outbox-path.txt"))
             .and_then(|p| std::fs::read_to_string(&p).ok())
@@ -228,11 +220,12 @@ pub fn execute(args: SendArgs) -> i32 {
         return 1;
     }
 
-    // ── Poll for delivery confirmation ────────────────────────────────────
-    // The MailboxPoller will pick up the file and move it to delivered/ or
-    // rejected/. Wait until we know the outcome.
-    let delivered_path = outbox_dir.join("delivered").join(format!("{}.json", msg_id));
-    let rejected_reason_path = outbox_dir.join("rejected").join(format!("{}.reason.txt", msg_id));
+    let delivered_path = outbox_dir
+        .join("delivered")
+        .join(format!("{}.json", msg_id));
+    let rejected_reason_path = outbox_dir
+        .join("rejected")
+        .join(format!("{}.reason.txt", msg_id));
 
     let confirm_timeout = std::time::Duration::from_secs(30);
     let confirm_poll = std::time::Duration::from_millis(250);
@@ -241,7 +234,7 @@ pub fn execute(args: SendArgs) -> i32 {
     loop {
         if delivered_path.exists() {
             println!("Message delivered: {}", msg_id);
-            break;
+            return 0;
         }
         if rejected_reason_path.exists() {
             let reason = std::fs::read_to_string(&rejected_reason_path)
@@ -258,39 +251,4 @@ pub fn execute(args: SendArgs) -> i32 {
         }
         std::thread::sleep(confirm_poll);
     }
-
-    // ── If --get-output, wait for response after confirmed delivery ───────
-    if let Some(rid) = request_id {
-        let responses_dir = ac_dir.join("responses");
-        let response_path = responses_dir.join(format!("{}.json", rid));
-        let timeout = std::time::Duration::from_secs(args.timeout);
-        let poll_interval = std::time::Duration::from_secs(2);
-        let resp_start = std::time::Instant::now();
-
-        println!("Waiting for response (timeout: {}s)...", args.timeout);
-
-        loop {
-            if resp_start.elapsed() >= timeout {
-                eprintln!("Error: timeout waiting for response after {}s", args.timeout);
-                return 1;
-            }
-
-            if response_path.exists() {
-                match std::fs::read_to_string(&response_path) {
-                    Ok(content) => {
-                        println!("{}", content);
-                        return 0;
-                    }
-                    Err(e) => {
-                        eprintln!("Error: failed to read response file: {}", e);
-                        return 1;
-                    }
-                }
-            }
-
-            std::thread::sleep(poll_interval);
-        }
-    }
-
-    0
 }

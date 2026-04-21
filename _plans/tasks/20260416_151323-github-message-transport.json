@@ -1,0 +1,34 @@
+{
+    "schemaVersion":  1,
+    "id":  "20260416_151323-github-message-transport",
+    "slug":  "github-message-transport",
+    "summary":  "Move human message transport from raw CLI payloads to GitHub issue comment URLs only.",
+    "status":  "active",
+    "activeWorkgroup":  "wg-6-dev-team",
+    "workgroupHistory":  [
+                             {
+                                 "workgroup":  "wg-6-dev-team",
+                                 "startedAt":  "2026-04-16T18:13:23Z",
+                                 "endedAt":  null,
+                                 "status":  "active",
+                                 "branch":  "feature/github-message-transport-gh59",
+                                 "note":  "Initial implementation workgroup."
+                             }
+                         ],
+    "github":  {
+                   "owner":  "mblua",
+                   "repo":  "AgentsCommander",
+                   "issueNumber":  59,
+                   "issueUrl":  "https://github.com/mblua/AgentsCommander/issues/59"
+               },
+    "branch":  {
+                   "name":  "feature/github-message-transport-gh59",
+                   "base":  "main"
+               },
+    "messaging":  {
+                      "mode":  "github-issue-comments",
+                      "notifyWith":  "issue-comment-url"
+                  },
+    "createdAt":  "2026-04-16T18:13:23Z",
+    "updatedAt":  "2026-04-16T18:13:23Z"
+}

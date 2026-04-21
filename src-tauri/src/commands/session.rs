@@ -364,7 +364,7 @@ pub async fn create_session_inner(
 
     // Auto-inject credentials for agent sessions after PTY spawn.
     // Wait for Claude to become idle (ready for input) instead of fixed delay.
-    // Mirrors the pattern in mailbox.rs inject_followup_after_idle_static.
+    // Mirrors the mailbox idle-wait injection flow used for GitHub notifications.
     if agent_id.is_some() {
         let app_clone = app.clone();
         let session_id = id;

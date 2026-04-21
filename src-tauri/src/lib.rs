@@ -657,7 +657,6 @@ pub fn run() {
             commands::window::open_in_explorer,
             commands::window::open_guide_window,
             commands::window::ensure_terminal_window,
-            commands::phone::phone_send_message,
             commands::phone::phone_get_inbox,
             commands::phone::phone_list_agents,
             commands::phone::phone_ack_messages,

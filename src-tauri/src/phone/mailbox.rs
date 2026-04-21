@@ -22,6 +22,14 @@ struct RetryState {
 
 const MAX_DELIVERY_ATTEMPTS: u32 = 10;
 const ERR_UNRESOLVABLE_AGENT: &str = "Could not resolve inbox for agent";
+const LEGACY_RAW_MESSAGE_REASON: &str =
+    "Legacy raw-text message payloads are no longer supported. Post the long-form message as a GitHub issue comment and send only the issue comment URL.";
+const LEGACY_GET_OUTPUT_REASON: &str =
+    "Legacy --get-output message payloads are no longer supported. Read and reply in GitHub, then notify peers with the reply comment URL.";
+const COMMAND_AND_MESSAGE_REASON: &str =
+    "--command can no longer be combined with --message. Run the command and the GitHub comment notification as separate operations.";
+const MISSING_COMMENT_URL_REASON: &str =
+    "Human messages now require commentUrl. Post the long-form message in GitHub and send only the issue comment URL.";
 
 /// The MailboxPoller runs as a background tokio task. It polls outbox directories
 /// for all known agent repos, validates messages, and delivers them according to mode.
@@ -243,6 +251,34 @@ impl MailboxPoller {
                     )
                     .await;
                 }
+            }
+        }
+
+        if msg.action.is_none() {
+            if msg.legacy_get_output {
+                return self
+                    .reject_message(path, &msg, LEGACY_GET_OUTPUT_REASON)
+                    .await;
+            }
+            if msg
+                .legacy_body
+                .as_deref()
+                .map(str::trim)
+                .is_some_and(|body| !body.is_empty())
+            {
+                return self
+                    .reject_message(path, &msg, LEGACY_RAW_MESSAGE_REASON)
+                    .await;
+            }
+            if msg.command.is_some() && msg.comment_url.is_some() {
+                return self
+                    .reject_message(path, &msg, COMMAND_AND_MESSAGE_REASON)
+                    .await;
+            }
+            if msg.command.is_none() && msg.comment_url.is_none() {
+                return self
+                    .reject_message(path, &msg, MISSING_COMMENT_URL_REASON)
+                    .await;
             }
         }
 
@@ -576,7 +612,7 @@ impl MailboxPoller {
             drop(mgr);
         }
 
-        // Inject message — interactive mode (session persists, user sees reply instructions)
+        // Inject the GitHub notification block into the live interactive session.
         self.inject_into_pty(app, session_id, msg, true).await
     }
 
@@ -595,7 +631,7 @@ impl MailboxPoller {
 
             if let Some(s) = session {
                 if s.waiting_for_input {
-                    // Existing session is interactive — no response markers
+                    // Existing session is interactive — inject the GitHub notification block directly.
                     return self.inject_into_pty(app, session_id, msg, true).await;
                 }
                 if matches!(s.status, SessionStatus::Exited(_)) {
@@ -670,7 +706,7 @@ impl MailboxPoller {
                     // Wait for agent boot + init prompt injection (init fires at 3s, needs time to process)
                     tokio::time::sleep(std::time::Duration::from_secs(6)).await;
 
-                    // Inject the message — non-interactive one-shot, use markers if get_output
+                    // Inject the GitHub notification block, then destroy the temporary session.
                     self.inject_into_pty(app, session_id, msg, false).await?;
 
                     // Schedule cleanup: wait for idle then destroy session
@@ -750,17 +786,13 @@ impl MailboxPoller {
         }
     }
 
-    /// Inject a message into a session's PTY stdin.
-    /// `interactive` = true means the session is a live interactive agent (wake/active-only).
-    ///   → plain message only, no response markers, no watcher.
-    /// `interactive` = false means it's a non-interactive one-shot (wake-and-sleep).
-    ///   → if get_output, include response marker instructions and register watcher.
+    /// Inject a command or GitHub notification into a session's PTY stdin.
     async fn inject_into_pty(
         &self,
         app: &tauri::AppHandle,
         session_id: Uuid,
         msg: &OutboxMessage,
-        interactive: bool,
+        _interactive: bool,
     ) -> Result<(), String> {
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
@@ -827,68 +859,12 @@ impl MailboxPoller {
                 }),
             );
 
-            // If body is also present, spawn follow-up as background task.
             // Command delivery is already complete — don't block the delivery pipeline.
-            if !msg.body.is_empty() {
-                let app_clone = app.clone();
-                let msg_clone = msg.clone();
-                tauri::async_runtime::spawn(async move {
-                    if let Err(e) =
-                        Self::inject_followup_after_idle_static(&app_clone, session_id, &msg_clone)
-                            .await
-                    {
-                        log::warn!("Follow-up injection after remote command failed: {}", e);
-                    }
-                });
-            }
-
             return Ok(());
         }
 
         // ── Standard message path ──
-        // Only use response markers for non-interactive sessions
-        let use_markers = msg.get_output && !interactive;
-
-        // Resolve binary path for reply instructions
-        let bin_path = crate::resolve_bin_label();
-
-        let payload = if use_markers {
-            if let Some(ref rid) = msg.request_id {
-                format!(
-                    "\n[Message from {}] {}\n(Reply between markers: %%AC_RESPONSE::{}::START%% ... %%AC_RESPONSE::{}::END%%)\n\r",
-                    msg.from, msg.body, rid, rid
-                )
-            } else {
-                format!("\n[Message from {}] {}\n\r", msg.from, msg.body)
-            }
-        } else {
-            format!(
-                concat!(
-                    "\n[Message from {from}] {body}\n",
-                    "(To reply, run: \"{bin}\" send --token <your_token> --to \"{from}\" --message \"your reply\" --mode wake)\n\r",
-                ),
-                from = msg.from,
-                body = msg.body,
-                bin = bin_path,
-            )
-        };
-
-        // Register response watcher only for non-interactive sessions
-        if use_markers {
-            if let Some(ref rid) = msg.request_id {
-                // Response file goes to the SENDER's .agentscommander/responses/
-                if let Some(sender_path) = self.resolve_repo_path(&msg.from, app).await {
-                    let response_dir = std::path::PathBuf::from(sender_path)
-                        .join(crate::config::agent_local_dir_name())
-                        .join("responses");
-                    let mgr = pty_mgr
-                        .lock()
-                        .map_err(|e| format!("PTY lock failed: {}", e))?;
-                    mgr.register_response_watcher(session_id, rid.clone(), response_dir);
-                    drop(mgr);
-                }
-            }
-        }
+        let payload = self.build_github_notification_payload(msg)?;
 
         log::debug!(
             "[mailbox] Injecting into PTY session={} msg={} payload_len={} first_100={:?}",
@@ -926,58 +902,6 @@ impl MailboxPoller {
             }),
         );
         Ok(())
-    }
-
-    /// Wait for agent to become idle after a remote command, then inject body as follow-up.
-    /// Static method — can be spawned as a detached task without borrowing self.
-    async fn inject_followup_after_idle_static(
-        app: &tauri::AppHandle,
-        session_id: Uuid,
-        msg: &OutboxMessage,
-    ) -> Result<(), String> {
-        let max_wait = std::time::Duration::from_secs(30);
-        let poll = std::time::Duration::from_millis(500);
-        let start = std::time::Instant::now();
-
-        // Wait for idle (waiting_for_input = true)
-        loop {
-            if start.elapsed() >= max_wait {
-                return Err(format!(
-                    "Timeout waiting for agent to become idle after remote command ({}s)",
-                    max_wait.as_secs()
-                ));
-            }
-            tokio::time::sleep(poll).await;
-
-            let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
-            let mgr = session_mgr.read().await;
-            let sessions = mgr.list_sessions().await;
-            match sessions.iter().find(|s| s.id == session_id.to_string()) {
-                Some(s) if s.waiting_for_input => break,
-                Some(_) => {} // busy — keep polling
-                None => {
-                    return Err(format!(
-                        "Session {} destroyed before follow-up could be injected",
-                        session_id
-                    ))
-                }
-            }
-        }
-
-        // Inject the follow-up body as a standard interactive message.
-        // Note: same TOCTOU race as the command path — agent could become busy
-        // between the idle check above and this write. Acceptable for this use case.
-        let bin_path = crate::resolve_bin_label();
-        let payload = format!(
-            concat!(
-                "\n[Message from {from}] {body}\n",
-                "(To reply, run: \"{bin}\" send --token <your_token> --to \"{from}\" --message \"your reply\" --mode wake)\n\r",
-            ),
-            from = msg.from,
-            body = msg.body,
-            bin = bin_path,
-        );
-        crate::pty::inject::inject_text_into_session(app, session_id, &payload, true).await
     }
 
     /// Find the best session for a given agent name (matches by working directory).
@@ -1302,7 +1226,7 @@ impl MailboxPoller {
         let full_cmd = format!("{} {}", shell, shell_args.join(" "));
         let basenames: Vec<String> = full_cmd
             .split_whitespace()
-            .map(|t| crate::commands::session::executable_basename(t))
+            .map(crate::commands::session::executable_basename)
             .collect();
 
         if basenames.iter().any(|b| b == "claude" || b == "aider") {
@@ -1410,6 +1334,71 @@ impl MailboxPoller {
     /// Only agents in the same team can communicate — no parent directory fallback.
     fn can_reach(&self, from: &str, to: &str, discovered_teams: &[teams::DiscoveredTeam]) -> bool {
         crate::config::teams::can_communicate(from, to, discovered_teams)
+    }
+
+    fn build_github_notification_payload(&self, msg: &OutboxMessage) -> Result<String, String> {
+        let comment_url = msg
+            .comment_url
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| MISSING_COMMENT_URL_REASON.to_string())?;
+        if !comment_url.starts_with("https://github.com/")
+            || !comment_url.contains("#issuecomment-")
+        {
+            return Err(
+                "commentUrl must be a GitHub issue comment URL (https://github.com/<owner>/<repo>/issues/<number>#issuecomment-<id>)"
+                    .to_string(),
+            );
+        }
+
+        let task_id = msg
+            .task_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Message taskId metadata is missing".to_string())?;
+        let task_summary = msg
+            .task_summary
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Message taskSummary metadata is missing".to_string())?;
+        let github_owner = msg
+            .github_owner
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Message githubOwner metadata is missing".to_string())?;
+        let github_repo = msg
+            .github_repo
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| "Message githubRepo metadata is missing".to_string())?;
+        let github_issue_number = msg
+            .github_issue_number
+            .ok_or_else(|| "Message githubIssueNumber metadata is missing".to_string())?;
+
+        let bin_path = crate::resolve_bin_label();
+        Ok(format!(
+            concat!(
+                "\n[GitHub message from {from}]\n",
+                "Task: {task_id} - {task_summary}\n",
+                "Issue: {owner}/{repo}#{issue}\n",
+                "Comment: {comment}\n\n",
+                "Read and reply in GitHub. After posting your reply comment, notify the sender:\n",
+                "\"{bin}\" send --token <your_token> --root \"<your_root>\" --to \"{from}\" --message \"<reply_comment_url>\" --mode wake\n\r"
+            ),
+            from = msg.from,
+            task_id = task_id,
+            task_summary = task_summary,
+            owner = github_owner,
+            repo = github_repo,
+            issue = github_issue_number,
+            comment = comment_url,
+            bin = bin_path,
+        ))
     }
 
     /// Resolve which agent CLI to use for wake-and-sleep mode.
@@ -1719,7 +1708,7 @@ impl MailboxPoller {
                     # New session token: {token}\n\
                     #\n\
                     # Updated send command:\n\
-                    #   \"{exe}\" send --token {token} --root \"{root}\" --to \"<agent_name>\" --message \"...\" --mode wake\n\
+                    #   \"{exe}\" send --token {token} --root \"{root}\" --to \"<agent_name>\" --message \"https://github.com/<owner>/<repo>/issues/<number>#issuecomment-<comment_id>\" --mode wake\n\
                     # === End Token Refresh ===\n\
                     \r",
                     exe = crate::config::profile::exe_name(),

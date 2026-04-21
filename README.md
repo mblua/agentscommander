@@ -193,14 +193,11 @@ That's it. The instance creates its own config directory on first launch, gets a
 
 The `agentscommander` binary doubles as a CLI for agent-to-agent operations. Available subcommands:
 
-### `send` — Send a message to another agent
+### `send` — Notify another agent about a GitHub issue comment
 
 ```bash
-# Send a message
-agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message "..." --mode wake
-
-# Send a message from file (avoids shell quoting issues — recommended for PowerShell)
-agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message-file /path/to/msg.txt --mode wake
+# Notify another agent about a GitHub issue comment
+agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --message "https://github.com/<owner>/<repo>/issues/<number>#issuecomment-<comment_id>" --mode wake
 
 # Send a remote command (clear or compact)
 agentscommander send --token <TOKEN> --root <CWD> --to <agent_name> --command clear --mode wake
@@ -213,27 +210,29 @@ All messages are delivered synchronously — the CLI validates routing, delivers
 | `--token` | No | Session token for authentication |
 | `--root` | Yes | Sender's root directory (used to derive agent name) |
 | `--to` | Yes | Destination agent name (e.g., `"repos/my-project"`) |
-| `--message` | No* | Message body |
-| `--message-file` | No* | Path to a file containing the message body (avoids shell quoting issues) |
+| `--message` | No* | GitHub issue comment URL in the form `https://github.com/<owner>/<repo>/issues/<number>#issuecomment-<comment_id>` |
 | `--command` | No* | Remote command to execute (whitelist: `clear`, `compact`) |
 | `--mode` | No | Delivery mode: `wake` (default), `active-only`, `wake-and-sleep` |
-| `--get-output` | No | Wait for and return the agent's response |
-| `--timeout` | No | Timeout in seconds for `--get-output` (default: 300) |
 
-*At least one of `--message`, `--message-file`, or `--command` is required.
+*At least one of `--message` or `--command` is required.
 
-**`--message-file`** is the recommended alternative to `--message` when the message body contains quotes, apostrophes, special characters, or spans multiple lines. It reads the message from a file, bypassing shell quoting entirely. This is especially useful for agents running under PowerShell (e.g., Codex CLI), where `--message` strings with quotes break argument parsing. If both `--message` and `--message-file` are provided, `--message-file` takes priority.
+**Human message bodies no longer travel through the CLI.** Post the long-form text in GitHub first, then notify the recipient with the resulting issue comment URL via `--message`.
 
-**Remote commands** (`--command`) inject a slash command (e.g. `/clear`) directly into the agent's PTY. The destination agent must be idle (green circle in the sidebar) — the command is rejected otherwise.
+**Remote commands** (`--command`) inject a slash command (e.g. `/clear`) directly into the agent's PTY. The destination agent must be idle (green circle in the sidebar), and `--command` cannot be combined with `--message`.
 
 **Delivery modes:**
 - `wake` — Inject into PTY if the destination agent is idle (waiting for input). Reject otherwise.
 - `active-only` — Inject into PTY if the destination agent is actively running (not idle). Reject otherwise.
-- `wake-and-sleep` — Spawn a temporary session for the destination agent, inject the message, and destroy the session when done. Reject if the agent cannot be spawned.
+- `wake-and-sleep` — Spawn a temporary session for the destination agent, inject the GitHub notification, and destroy the session when done. Reject if the agent cannot be spawned.
 
 **Exit codes:** `0` = message delivered and confirmed, `1` = routing rejected, delivery failed, or timeout.
 
-**Pre-validation:** Before delivery, the CLI validates that the sender can reach the destination based on team membership and coordinator rules (`teams.json`). If routing would reject the message, the CLI fails immediately without writing to the outbox.
+**Pre-validation:** Before delivery, the CLI validates that the sender can reach the destination based on team membership and coordinator rules (`teams.json`). GitHub comment notifications also require exactly one active task record under sibling `repo-*/_plans/tasks/*.json` for the sender workgroup. If routing or task validation fails, the CLI exits immediately without writing to the outbox.
+
+### Helper scripts
+
+- `scripts/task-new.ps1` creates a paired `_plans/tasks/<task-id>.json` and `.md` record for a workgroup's active GitHub-linked task.
+- `scripts/gh-message.ps1` posts a Markdown body file to the active task's GitHub issue and can optionally notify another agent with the resulting issue comment URL.
 
 ### `list-peers` — List available peers
 
@@ -316,7 +315,7 @@ agentscommander/
 
 ## Version
 
-Current: **0.4.8**
+Current: **0.5.5**
 
 Version is kept in sync across three files:
 - `src-tauri/tauri.conf.json`

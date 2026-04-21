@@ -2,8 +2,8 @@
 /// root path interpolated into the GOLDEN RULE. Uses a deterministic filename
 /// based on the agent_root to prevent races between concurrent session launches.
 pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
-    let config_dir = super::config_dir()
-        .ok_or_else(|| "Could not resolve app config directory".to_string())?;
+    let config_dir =
+        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
     let context_dir = config_dir.join("context-cache");
     std::fs::create_dir_all(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
@@ -20,13 +20,15 @@ pub fn ensure_session_context(agent_root: &str) -> Result<String, String> {
         .map_err(|e| format!("Failed to write per-agent AgentsCommanderContext.md: {}", e))?;
     log::info!(
         "Refreshed per-agent AgentsCommanderContext.md for {} → {:?}",
-        agent_root, file_path
+        agent_root,
+        file_path
     );
 
     Ok(file_path.to_string_lossy().to_string())
 }
 
-const MANAGED_CONTEXT_FILENAMES: &[&str] = &["last_ac_context.md", "CLAUDE.md", "GEMINI.md", "AGENTS.md"];
+const MANAGED_CONTEXT_FILENAMES: &[&str] =
+    &["last_ac_context.md", "CLAUDE.md", "GEMINI.md", "AGENTS.md"];
 
 #[derive(Debug, Clone, Copy)]
 pub enum ManagedContextTarget {
@@ -61,8 +63,8 @@ fn generate_repos_workspace_info(
     cwd_path: &std::path::Path,
     config: &serde_json::Value,
 ) -> Result<std::path::PathBuf, String> {
-    let config_dir = super::config_dir()
-        .ok_or_else(|| "Could not resolve app config directory".to_string())?;
+    let config_dir =
+        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
     let context_dir = config_dir.join("context-cache");
     std::fs::create_dir_all(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
@@ -77,8 +79,11 @@ fn generate_repos_workspace_info(
         .unwrap_or_default();
 
     if repos.is_empty() {
-        std::fs::write(&file_path, "# Workspace Repos\n\nNo repos configured for this replica.\n")
-            .map_err(|e| format!("Failed to write repos workspace info: {}", e))?;
+        std::fs::write(
+            &file_path,
+            "# Workspace Repos\n\nNo repos configured for this replica.\n",
+        )
+        .map_err(|e| format!("Failed to write repos workspace info: {}", e))?;
         return Ok(file_path);
     }
 
@@ -105,10 +110,7 @@ fn generate_repos_workspace_info(
             })
             .unwrap_or_else(|_| resolved.to_string_lossy().to_string());
 
-        let repo_name = resolved
-            .file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or(rel);
+        let repo_name = resolved.file_name().and_then(|n| n.to_str()).unwrap_or(rel);
 
         if !resolved.exists() {
             md.push_str(&format!(
@@ -202,14 +204,21 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
 
         if raw == CONTEXT_TOKEN_GLOBAL {
             let global_path = ensure_session_context(cwd)?;
-            resolved_paths.push(("AgentsCommanderContext.md".to_string(), std::path::PathBuf::from(&global_path)));
+            resolved_paths.push((
+                "AgentsCommanderContext.md".to_string(),
+                std::path::PathBuf::from(&global_path),
+            ));
         } else if raw == CONTEXT_TOKEN_REPOS {
             let repos_path = generate_repos_workspace_info(cwd_path, &config)?;
             resolved_paths.push(("Workspace Repos".to_string(), repos_path));
         } else {
             let abs = cwd_path.join(raw);
             if abs.exists() {
-                let label = abs.file_name().and_then(|n| n.to_str()).unwrap_or(raw).to_string();
+                let label = abs
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or(raw)
+                    .to_string();
                 resolved_paths.push((label, abs));
             } else {
                 missing.push(raw.to_string());
@@ -234,7 +243,11 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
         return Err(format!(
             "Replica '{}' has missing context files:\n{}",
             replica_name,
-            missing.iter().map(|m| format!("  - {}", m)).collect::<Vec<_>>().join("\n")
+            missing
+                .iter()
+                .map(|m| format!("  - {}", m))
+                .collect::<Vec<_>>()
+                .join("\n")
         ));
     }
 
@@ -255,8 +268,8 @@ pub fn build_replica_context(cwd: &str) -> Result<Option<String>, String> {
     }
 
     // Write to a temp file in the app config dir
-    let config_dir = super::config_dir()
-        .ok_or_else(|| "Could not resolve app config directory".to_string())?;
+    let config_dir =
+        super::config_dir().ok_or_else(|| "Could not resolve app config directory".to_string())?;
     let context_dir = config_dir.join("context-cache");
     std::fs::create_dir_all(&context_dir)
         .map_err(|e| format!("Failed to create context-cache dir: {}", e))?;
@@ -286,15 +299,22 @@ fn resolve_session_context_content(cwd: &str) -> Result<Option<String>, String> 
 
     let context_path = match build_replica_context(cwd) {
         Ok(Some(combined_path)) => {
-            log::info!("Using replica combined context for agent session: {}", combined_path);
+            log::info!(
+                "Using replica combined context for agent session: {}",
+                combined_path
+            );
             combined_path
         }
         Ok(None) => ensure_session_context(cwd)?,
         Err(e) => return Err(e),
     };
 
-    let content = std::fs::read_to_string(&context_path)
-        .map_err(|e| format!("Failed to read resolved session context {}: {}", context_path, e))?;
+    let content = std::fs::read_to_string(&context_path).map_err(|e| {
+        format!(
+            "Failed to read resolved session context {}: {}",
+            context_path, e
+        )
+    })?;
     Ok(Some(content))
 }
 
@@ -314,8 +334,13 @@ pub fn materialize_agent_context_file(
     for filename in MANAGED_CONTEXT_FILENAMES {
         let path = cwd_path.join(filename);
         if path.exists() {
-            std::fs::remove_file(&path)
-                .map_err(|e| format!("Failed to remove stale context file {}: {}", path.display(), e))?;
+            std::fs::remove_file(&path).map_err(|e| {
+                format!(
+                    "Failed to remove stale context file {}: {}",
+                    path.display(),
+                    e
+                )
+            })?;
         }
     }
 
@@ -345,7 +370,7 @@ fn simple_hash(s: &str) -> u64 {
 /// the agent's own replica root path as an allowed write zone.
 fn default_context(agent_root: &str) -> String {
     format!(
-r#"# AgentsCommander Context
+        r#"# AgentsCommander Context
 
 You are running inside an AgentsCommander session — a terminal session manager that coordinates multiple AI agents.
 
@@ -415,14 +440,14 @@ Your agent root is your current working directory.
 
 **MANDATORY**: Before sending any message, resolve the exact agent name via `list-peers`. Never guess agent names — they follow the format `parent_folder/folder` based on where the agent is triggered.
 
-Fire-and-forget (do NOT use --get-output):
+Fire-and-forget GitHub notification:
 
 ```
-"<YOUR_BINARY_PATH>" send --token <YOUR_TOKEN> --root "<YOUR_ROOT>" --to "<agent_name>" --message "..." --mode wake
+"<YOUR_BINARY_PATH>" send --token <YOUR_TOKEN> --root "<YOUR_ROOT>" --to "<agent_name>" --message "https://github.com/<owner>/<repo>/issues/<number>#issuecomment-<comment_id>" --mode wake
 ```
 
 The other agent will reply back via your console as a new message.
-Do NOT use `--get-output` — it blocks and is only for non-interactive sessions.
+Post the long-form body in GitHub first. `send --message` accepts only the issue comment URL.
 After sending, you can stay idle and wait for the reply to arrive.
 
 ### List available peers

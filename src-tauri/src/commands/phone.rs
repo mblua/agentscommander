@@ -1,17 +1,7 @@
-use crate::config::teams;
 use crate::phone::manager;
 use crate::phone::types::{AgentInfo, PhoneMessage};
 
-#[tauri::command]
-pub async fn phone_send_message(
-    from: String,
-    to: String,
-    body: String,
-    team: String,
-) -> Result<String, String> {
-    let discovered = teams::discover_teams();
-    manager::send_message(&from, &to, &body, &team, &discovered)
-}
+use crate::config::teams;
 
 #[tauri::command]
 pub async fn phone_get_inbox(agent_name: String) -> Result<Vec<PhoneMessage>, String> {

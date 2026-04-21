@@ -5,8 +5,6 @@ use uuid::Uuid;
 use crate::config::teams;
 use crate::phone::types::OutboxMessage;
 
-use super::send::agent_name_from_root;
-
 #[derive(Args)]
 #[command(after_help = "\
 AUTHORIZATION: Only coordinators of the target agent's team can close sessions. \
@@ -56,7 +54,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         }
     };
 
-    let sender = agent_name_from_root(&root);
+    let sender = crate::cli::agent_name_from_root(&root);
 
     // Pre-validate coordinator authorization.
     // Check master token from LocalDir as additional bypass (independent of validate_cli_token).
@@ -92,9 +90,10 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         token: args.token,
         from: sender.clone(),
         to: args.target.clone(),
-        body: String::new(),
+        comment_url: None,
+        legacy_body: None,
         mode: String::new(),
-        get_output: false,
+        legacy_get_output: false,
         request_id: Some(request_id.clone()),
         sender_agent: None,
         preferred_agent: String::new(),
@@ -105,6 +104,12 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         target: Some(args.target.clone()),
         force: Some(args.force),
         timeout_secs: Some(args.timeout),
+        task_id: None,
+        task_summary: None,
+        github_owner: None,
+        github_repo: None,
+        github_issue_number: None,
+        messaging_mode: None,
     };
 
     // Write to outbox — use app outbox for root/master token, else agent's outbox
@@ -142,8 +147,12 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
     }
 
     // Poll for delivery confirmation
-    let delivered_path = outbox_dir.join("delivered").join(format!("{}.json", msg_id));
-    let rejected_reason_path = outbox_dir.join("rejected").join(format!("{}.reason.txt", msg_id));
+    let delivered_path = outbox_dir
+        .join("delivered")
+        .join(format!("{}.json", msg_id));
+    let rejected_reason_path = outbox_dir
+        .join("rejected")
+        .join(format!("{}.reason.txt", msg_id));
 
     let confirm_timeout = std::time::Duration::from_secs(30);
     let confirm_poll = std::time::Duration::from_millis(250);
@@ -184,7 +193,8 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
                     println!("{}", content);
                     // Parse response: exit 1 if no sessions were actually closed
                     if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&content) {
-                        let closed = resp.get("sessions_closed")
+                        let closed = resp
+                            .get("sessions_closed")
                             .and_then(|v| v.as_u64())
                             .unwrap_or(0);
                         if closed == 0 {
@@ -201,7 +211,9 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         }
         if resp_start.elapsed() >= resp_timeout {
             // Delivery succeeded but response timed out — sessions were likely closed
-            println!("close-session delivered but response timed out (sessions may have been closed)");
+            println!(
+                "close-session delivered but response timed out (sessions may have been closed)"
+            );
             return 0;
         }
         std::thread::sleep(resp_poll);

@@ -413,7 +413,7 @@ Returns JSON array of team peers with name, status, role, teams, reachability.
 ### Send a message
 
 ```bash
-"<BINARY>" send --token <TOKEN> --root "<AGENT_ROOT>" --to "<peer_name>" --message "..." --mode wake
+"<BINARY>" send --token <TOKEN> --root "<AGENT_ROOT>" --to "<peer_name>" --message "https://github.com/<owner>/<repo>/issues/<number>#issuecomment-<comment_id>" --mode wake
 ```
 
-The peer name comes from `list-peers` output. Use `--mode wake` for fire-and-forget.
+The peer name comes from `list-peers` output. Post the long-form message in GitHub first, then use `--mode wake` to deliver only the issue comment URL notification.

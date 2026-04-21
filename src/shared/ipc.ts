@@ -254,8 +254,6 @@ export function onTelegramBridgeError(
 
 // Phone API
 export const PhoneAPI = {
-  sendMessage: (from: string, to: string, body: string, team: string) =>
-    transport.invoke<string>("phone_send_message", { from, to, body, team }),
   getInbox: (agentName: string) =>
     transport.invoke<PhoneMessage[]>("phone_get_inbox", { agentName }),
   listAgents: () => transport.invoke<AgentInfo[]>("phone_list_agents"),
