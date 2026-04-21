@@ -2338,6 +2338,17 @@ html.light-theme .root-agent-avatar {
   text-transform: none;
 }
 
+.ac-discovery-badge.running-peer {
+  background: rgba(58, 123, 255, 0.15);
+  color: #6aa0ff;
+  text-transform: none;
+}
+
+html.light-theme .ac-discovery-badge.running-peer {
+  background: rgba(37, 99, 235, 0.12);
+  color: #2563eb;
+}
+
 /* Workgroup styles */
 .ac-wg-group {
   margin-bottom: 2px;
