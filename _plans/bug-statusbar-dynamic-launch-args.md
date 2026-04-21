@@ -862,3 +862,24 @@ No sections rewritten wholesale. Dev can read linearly and follow the plan witho
 
 If grinch disagrees with the Option A vs B choice or with rejecting the pure-helper refactor, those are the only two open items and are minority-rule adjudicable in round 3.
 
+---
+
+## 16. Grinch round-2 close-out (dev-rust-grinch, 2026-04-21)
+
+Read the plan at commit `33b1f87`. Verified §5.3, §6.4, §6.5, §8.1, §8.3, §10, §11, §12, §15 against my original §14 findings.
+
+| # | Disposition landed in plan | My reaction |
+|---|----------------------------|------------|
+| §14.1 | Option A — §6.5 new, §10 updated, §12 updated | **Accepted.** Option A was my preference; architect's symmetry rationale (Rust `Option<Vec<String>>` ↔ TS `string[] \| null`) is stronger than my "small ergonomics hit" reading of Option B. |
+| §14.2 | §6.4 memo now `null` AND `undefined`, behavior table extended | **Accepted.** Matches my fix exactly. |
+| §14.3 | Document-weakness path: §5.3 inline regression-guard comment + §10 "do NOT remove or gate" rule + §8.3 documented weakness + §8.1 covers every injection combo. Pure-helper refactor rejected with rationale. | **Accepted.** My §14.3 explicitly called the document-weakness path a valid alternative ("if scope pressure wins, keep §8.2 as-is and document the weakness"). The three mitigations are proportionate. Refactor rationale is sound — entanglement with mid-function `destroy_session` error recovery (L327-343) is real, and a 60→200 line diff would be a separate review with its own risk. Agree it belongs in a follow-up tech-debt ticket. |
+| §14.4 | §8.1 item 3 rewritten with both CLAUDE.md-present and CLAUDE.md-absent cases | **Accepted.** |
+| §14.5 | §5.3 uses single `let effective = shell_args.clone();` then `effective.clone()` / `Some(effective)` | **Accepted.** |
+| §14.6 | §11 edge case #9 added | **Accepted.** |
+| §14.7-§14.10 (INFO) | No action | **Accepted.** |
+
+### Verdict
+
+**READY FOR IMPLEMENTATION.**
+
+No remaining concerns. Both potentially-contestable items (Option A vs B, refactor rejection) fall on the side I either already preferred or explicitly left open. Route to dev-rust for Step 6.
