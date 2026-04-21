@@ -396,7 +396,8 @@ const ProjectPanel: Component = () => {
         const renderReplicaItem = (
           replica: AcAgentReplica,
           wg: AcWorkgroup,
-          extraBadge?: string
+          extraBadge?: string,
+          runningPeers?: () => AcAgentReplica[]
         ) => {
           const dotClass = () => replicaDotClass(wg, replica);
           const isCoord = () => isReplicaCoordinator(replica, proj.folderName, proj.teams, wg.teamName);
@@ -482,6 +483,18 @@ const ProjectPanel: Component = () => {
               <div class="replica-item-info">
                 <span class="replica-item-name">{replica.originProject ? `${replica.name}@${replica.originProject}` : replica.name}</span>
                 <div class="ac-discovery-badges">
+                  <Show when={runningPeers && runningPeers()!.length > 0}>
+                    <For each={runningPeers!()}>
+                      {(peer) => (
+                        <span
+                          class="ac-discovery-badge running-peer"
+                          title={`${wg.name}/${peer.name}`}
+                        >
+                          {peer.name} RUNNING
+                        </span>
+                      )}
+                    </For>
+                  </Show>
                   <Show when={isCoord()}>
                     <Show
                       when={(() => { const s = session(); return s && s.gitRepos.length > 0 ? s : undefined; })()}
@@ -655,7 +668,16 @@ const ProjectPanel: Component = () => {
                     <Show when={coordinators().length > 0}>
                       <div class="coord-quick-access">
                         <For each={coordinators()}>
-                          {(item) => renderReplicaItem(item.replica, item.wg, item.wg.name)}
+                          {(item) => {
+                            const runningPeers = createMemo(() =>
+                              item.wg.agents.filter((peer) => {
+                                if (peer.name === item.replica.name) return false;
+                                const dot = replicaDotClass(item.wg, peer);
+                                return dot === "running" || dot === "active";
+                              })
+                            );
+                            return renderReplicaItem(item.replica, item.wg, item.wg.name, runningPeers);
+                          }}
                         </For>
                       </div>
                     </Show>
