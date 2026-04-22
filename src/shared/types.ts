@@ -230,6 +230,7 @@ export interface AcAgentReplica {
   preferredAgentId?: string;
   repoPaths: string[];
   repoBranch?: string;
+  isCoordinator: boolean;
 }
 
 export interface AcWorkgroup {
