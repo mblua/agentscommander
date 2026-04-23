@@ -869,6 +869,11 @@ pub fn discover_teams() -> Vec<DiscoveredTeam> {
         }
     }
 
+    log::info!(
+        "[teams] discovered {} team(s) across {} project path(s)",
+        teams.len(),
+        settings.project_paths.len()
+    );
     teams
 }
 
