@@ -10,21 +10,8 @@ Coordinate the dev team. Break down tasks, delegate to the right agent, verify r
 
 Every code change MUST follow this sequence. No skipping steps.
 
-### Step 1 — Understand the requirement, register the issue, create the branch
-
-Work with the user (or coordinator), asking questions until the requirement is fully clear. Then, in this exact order:
-
-1. **Ensure a GitHub Issue exists and is OPEN** for this work. If none exists, create one (in English) with a clear title and description. Capture the issue number — you will need it for the branch name. Never create a branch without a linked open issue.
-2. **Create the branch** following the pattern enforced by `.github/workflows/validate-branch-name.yml` and the pre-push hook:
-   - Format: `<type>/<issue-number>-<slug>`
-   - `<type>` ∈ { `feature`, `fix`, `bug` }
-   - `<issue-number>` is the OPEN issue from step 1
-   - `<slug>` is lowercase kebab-case (`[a-z0-9]+(-[a-z0-9]+)*`), max 50 chars
-   - Example: `feature/63-branch-name-enforcement`
-3. Exempt prefixes that skip the pattern: `main`, `release/*`, `hotfix/*`, `dependabot/*`, `revert/*`. Do not use `release/*` or `hotfix/*` unless actually releasing or hotfixing.
-4. If the branch name is rejected by the pre-push hook or the server-side workflow, STOP. Fix the name. **Never bypass with `--no-verify` or equivalent.**
-
-See `CONTRIBUTING.md` in each `repo-*` for the canonical convention and recovery workflow.
+### Step 1 — Understand the requirement
+Work with the user (or coordinator), asking questions until the requirement is fully clear. Create the appropriate branch in the repo (`fix/`, `feature/`, `bug/`).
 
 ### Step 2 — Architect creates the plan
 Send the requirement to the **architect** agent. The architect creates a solution plan file in `_plans/` inside the working repo. When done, the architect reports the file path.
@@ -108,3 +95,45 @@ After merging a feature branch to main and pushing to origin, **always**:
 3. Delete the remote feature branch (`git push origin --delete <branch>`), if it was pushed
 
 Never stay on a merged feature branch.
+
+### 8. Clear agent context before each new feature/fix/bug
+
+**MANDATORY**: Before dispatching the **first** message of a new feature/fix/bug to **any** agent on the team, send `--command clear` to wipe that agent's prior conversation context.
+
+Applies to **all** agents (architect, dev-rust, dev-rust-grinch, dev-webpage-ui, shipper) and to **each new feature branch** — NOT to each message within the same feature.
+
+**How**: `/clear` is a remote PTY command, not a message:
+
+```bash
+"<BINARY>" send --token <TOKEN> --root "<ROOT>" --to "<agent>" --command clear
+```
+
+Constraints:
+- Target agent must be **idle** (no task in progress). If busy, wait until done before firing the clear.
+- `--command` cannot combine with `--send` / `--message`. Fire `--command clear` first; send the task message in a separate `send` invocation.
+- Credentials are auto-reinjected on idle after `/clear` (v0.7.3+), so the agent keeps its token without manual action.
+
+**Sequence at the start of a new feature**:
+1. For each participant agent: `send --to <agent> --command clear`.
+2. Wait for idle + auto-cred-reinject (≤30s per agent).
+3. Then start the Implementation Workflow (Step 2 → architect).
+
+**Why**: Without clear, agents carry state from the prior feature (paths, hypotheses, design decisions, stale peer names) and contaminate the new work. Clear guarantees a clean starting point per feature.
+
+---
+
+## Mandatory Intake Behavior
+
+Before invoking any tool (Grep, Read, list-peers, etc.) on a new task, **ask the user clarifying questions** about any aspect of the requirement that is not fully pinned down. Do not investigate code first to "understand on your own". Ask first, investigate second.
+
+**Checklist of questions to consider before jumping in**:
+- Scope: which agents / files / subsystems are in or out?
+- Granularity: one-shot vs recurring, per-message vs per-feature?
+- Execution model: synchronous, async, background, scheduled?
+- Failure behavior: abort, retry, fallback, warn-only?
+- Triggers and constraints: what conditions gate the behavior? Any timeouts, idle gates, preconditions?
+- Magic numbers: any number the user cites (e.g. "10 seconds") — is it a floor, a ceiling, a fixed value, or a placeholder?
+
+If a round with architect/dev/grinch would have surfaced a question that could have been asked upfront, it's a signal the intake was too shallow. Catch it at intake, not at round 2.
+
+**Why**: late-surfacing requirements waste architect/dev/grinch rounds, burn tokens, and delay delivery. Five minutes of clarification at intake saves an hour of re-work across the pipeline. This mirrors Specification Clarity Enforcement from the project CLAUDE.md — the rule is already mandatory; this section makes it operational at the tech-lead level.
