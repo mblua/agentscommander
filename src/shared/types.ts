@@ -145,6 +145,7 @@ export interface AppSettings {
   projectPaths: string[];
   sidebarStyle: string;
   onboardingDismissed: boolean;
+  coordSortByActivity: boolean;
 }
 
 // Team grouping for sidebar
@@ -179,6 +180,9 @@ export interface SessionsState {
   showInactive: boolean;
   showCategories: boolean;
   repos: RepoMatch[];
+  coordSortByActivity: boolean;
+  lastActivityBySessionId: Record<string, number>;
+  hydrated: boolean;
 }
 
 // Phone communication types

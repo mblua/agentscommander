@@ -68,6 +68,7 @@ const SidebarApp: Component = () => {
     // Apply window settings
     const appSettings = await SettingsAPI.get();
     raiseTerminalEnabled = appSettings.raiseTerminalOnClick;
+    sessionsStore.setCoordSortByActivity(appSettings.coordSortByActivity ?? false);
     // Apply sidebar style from settings (remap removed themes to default)
     const style = appSettings.sidebarStyle;
     const removedThemes = ["classic", "signal-grid"];
@@ -147,6 +148,7 @@ const SidebarApp: Component = () => {
 
     unlisteners.push(
       await onSessionIdle(({ id }) => {
+        sessionsStore.markActivity(id);
         sessionsStore.setSessionWaiting(id, true);
       })
     );

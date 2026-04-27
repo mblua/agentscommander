@@ -653,6 +653,15 @@ const ProjectPanel: Component = () => {
                         }
                       }
                     }
+                    if (sessionsStore.coordSortByActivity) {
+                      const activityMap = sessionsStore.lastActivityBySessionId;
+                      const tsFor = (item: { replica: AcAgentReplica; wg: AcWorkgroup }): number => {
+                        const session = replicaSession(item.wg, item.replica);
+                        if (!session) return 0;
+                        return activityMap[session.id] ?? 0;
+                      };
+                      result.sort((a, b) => tsFor(b) - tsFor(a));
+                    }
                     return result;
                   });
                   return (

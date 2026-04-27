@@ -125,6 +125,14 @@ const ActionBar: Component = () => {
         </div>
         <div class="action-bar-icons">
           <button
+            class={`toolbar-gear-btn coord-sort-activity-btn ${sessionsStore.coordSortByActivity ? "active" : ""}`}
+            disabled={!sessionsStore.hydrated || sessionsStore.toggleInFlight}
+            onClick={() => sessionsStore.toggleCoordSortByActivity()}
+            title={sessionsStore.coordSortByActivity ? "Show recent coordinators first" : "Show coordinators in default order"}
+          >
+            &#x1F525;
+          </button>
+          <button
             class={`toolbar-gear-btn show-categories-btn ${sessionsStore.showCategories ? "active" : ""}`}
             onClick={() => sessionsStore.toggleShowCategories()}
             title={sessionsStore.showCategories ? "Hide category sections" : "Show category sections"}

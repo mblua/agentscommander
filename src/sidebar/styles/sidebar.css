@@ -524,6 +524,19 @@ html, body, #root {
   opacity: 1;
 }
 
+/* Coord sort-by-activity toggle */
+.coord-sort-activity-btn {
+  font-size: 14px;
+  opacity: 0.4;
+  transition: opacity 150ms ease-out;
+}
+.coord-sort-activity-btn:hover {
+  opacity: 0.7;
+}
+.coord-sort-activity-btn.active {
+  opacity: 1;
+}
+
 /* Close button on session item */
 .session-item-close {
   display: none;
