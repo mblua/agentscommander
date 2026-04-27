@@ -1512,3 +1512,187 @@ All seven attack vectors now ✓ or info-only. The plan is ready for implementat
 Optional follow-up (architect's discretion): add `if (!state.hydrated) return;` at the top of `toggleCoordSortByActivity` for symmetric defense-in-depth with the existing `toggleInFlight` guard. One line, no downside.
 
 I will re-review the implementation per Step 7 of the workflow.
+
+---
+
+## 20. dev-rust-grinch step-7 review
+
+Reviewed the actual code at `feature/86-coord-sort-by-activity-toggle` HEAD `eb73238`. Three commits:
+
+- `415dc9f` — Rust struct field + 2 tests (52+/1−)
+- `0ff9da9` — plan file (docs commit, ignored)
+- `eb73238` — TS types + sessions store + UI (83+/0−)
+
+Cross-checked every diff hunk against the plan §3-§9 anchors. Ran `cargo check`, `npx tsc --noEmit`, `cargo test config::settings::tests::coord_sort_by_activity` at HEAD AND at intermediate commit `415dc9f` — all pass. My §19 nice-to-have (`if (!state.hydrated) return;`) was applied. No HIGH or MED bugs found.
+
+### Verdict
+
+**APPROVE.** Ready for shipper.
+
+### Findings summary
+
+| ID | Severity | Issue |
+|---|---|---|
+| N1 | NOTE | `setCoordSortByActivity` does two unbatched `setState` calls — no current consumer observes the intermediate state, but `batch()` would future-proof |
+| N2 | NOTE | `SettingsAPI.get()` rejection on app start leaves the button forever-disabled — pre-existing all-or-nothing `onMount` failure mode, not introduced by this PR |
+| N3 | NOTE | Implementation deviates from plan's phase split (Rust alone in commit 1, all-frontend in commit 2) instead of (Rust+sessions store in Phase A, UI in Phase B) — both intermediate states build clean, so functionally equivalent |
+| N4 | NOTE | Manual UI verification (§11 paths 1-9, 5.5, 6.5) is outstanding — dev-webpage-ui couldn't run `npm run tauri dev`. Static correctness is confirmed; visual reorder behavior must still be confirmed by a human |
+
+All four are NOTES — none block merge.
+
+### Plan-vs-code drift (item 1) ✓
+
+Cross-checked every plan section against the diffs:
+
+| Plan section | Code change | Match |
+|---|---|---|
+| §3.1.1 — `coord_sort_by_activity: bool` field after `onboarding_dismissed` | `settings.rs:106-110` adds field with comment + `#[serde(default)]` | ✓ |
+| §3.1.2 — Initialize in `Default` impl after `onboarding_dismissed: false,` | `settings.rs:179` adds `coord_sort_by_activity: false,` | ✓ |
+| §3.4 — Optional round-trip + missing-field tests | `settings.rs:454-498` adds both tests; `assert_eq!(x, false)` switched to `assert!(!x)` for clippy `bool_assert_comparison` (semantically identical, documented in commit message) | ✓ minor |
+| §4.1 — Add `coordSortByActivity: boolean` to `AppSettings` | `types.ts:148` | ✓ |
+| §4.2 — Add 3 fields to `SessionsState` | `types.ts:183-185` | ✓ (the `hydrated` field is added without the JSDoc comment from the plan — cosmetic loss, no functional difference) |
+| §5.1 — Add 3 fields to `createStore<SessionsState>` initializer | `sessions.ts:19-21` | ✓ |
+| §5.2 — Add 2 imports | `sessions.ts:6-7` | ✓ |
+| §5.3.1 — Module-level `toggleInFlight` signal | `sessions.ts:9` | ✓ |
+| §5.3.2 — Getters and mutators | `sessions.ts:344-381` | ✓ |
+| §6.1 — Hydrate in `App.tsx` | `App.tsx:71` | ✓ |
+| §6.2 — `markActivity` BEFORE `setSessionWaiting` in `onSessionIdle` | `App.tsx:151-152` | ✓ |
+| §7.1 — 🔥 button as first child of `.action-bar-icons` | `ActionBar.tsx:127-134` | ✓ |
+| §8.1 — Sort logic in `coordinators()` memo | `ProjectPanel.tsx:656-664` | ✓ |
+| §9.1 — 3 CSS rules for `.coord-sort-activity-btn` | `sidebar.css:527-539` | ✓ |
+
+**Bonus**: `if (!state.hydrated) return;` in `toggleCoordSortByActivity` (sessions.ts:362) — my §19 nice-to-have. Applied as the FIRST early-return, before `if (toggleInFlight()) return;`. Order is correct (must be hydrated AND not in flight). Closes the M1 programmatic-bypass gap I noted.
+
+No drift that introduces bugs. The two minor cosmetic deviations (assertion form, omitted JSDoc) are harmless.
+
+### Reactivity correctness in actual code (item 2) ✓
+
+**`disabled={!sessionsStore.hydrated || sessionsStore.toggleInFlight}`**: both reads happen inside the JSX expression's reactive context. `hydrated` getter returns `state.hydrated` (path-tracked); `toggleInFlight` getter returns `toggleInFlight()` (signal-tracked). Either flipping triggers re-render. The `||` short-circuits during pre-hydration so `toggleInFlight` isn't tracked yet — but `toggleInFlight` is guaranteed false during pre-hydration anyway (the only setter is inside `toggleCoordSortByActivity`, which can't run while `!hydrated`). After hydration, both signals become tracked. ✓
+
+**`markActivity` map-replacement**: confirmed in §15.1 and §18 against the actual SolidJS version in package.json. The wholesale replace pattern via `(prev) => ({ ...prev, [id]: ts })` triggers top-level path notifications. ✓
+
+**`sessionsStore.lastActivityBySessionId` read INSIDE the conditional**: at `ProjectPanel.tsx:657`, the read happens only when `coordSortByActivity` is true. Solid tracks dependencies fresh on each memo run. When the flag flips OFF→ON, the memo re-runs (because `coordSortByActivity` is tracked at the outer level), reads the map (establishes new tracking dependency), and sorts. When the flag flips ON→OFF, the memo re-runs, doesn't read the map (drops the dependency), returns unsorted. Subsequent map mutations while flag is OFF don't re-trigger the memo (correct: result wouldn't change). When flag flips OFF→ON again, the memo re-establishes the dependency and reads the latest map state (correct: includes all updates accumulated while flag was off). ✓
+
+### Race conditions in wired-up code (item 3) ✓ (with two NOTES)
+
+**`setCoordSortByActivity` order of two `setState` calls (sessions.ts:354-357)**:
+
+```ts
+setState("coordSortByActivity", value);
+setState("hydrated", true);
+```
+
+These are NOT batched. Solid stores notify per `setState` call. Between the two calls, dependent memos/effects re-run with `coord = value, hydrated = false (still)`. Then the second call fires; they re-run with `coord = value, hydrated = true`.
+
+**N1 (NOTE)**: I traced every current consumer:
+
+- Button `disabled` reads `hydrated` only (not `coord`) — invisible to it.
+- Button `class` reads `coord` only (not `hydrated`) — invisible to it.
+- Button `title` reads `coord` only — invisible to it.
+- ProjectPanel sort memo reads `coord` (and conditionally `lastActivityBySessionId`) — doesn't read `hydrated`.
+
+No current consumer reads both `coord` and `hydrated` atomically. The intermediate state is unobservable. The order (coord first, hydrated second) is also the safer order: a hypothetical future consumer doing `if (hydrated && coord)` would only see the new coord after hydrated flips, which is the intent.
+
+For future-proofing, wrapping in `batch(() => { ... })` would make the two writes atomic from the reactive perspective. Optional.
+
+**`SettingsAPI.get()` rejection at App.tsx:69**:
+
+If `get()` rejects, the rest of `onMount` doesn't run. `setCoordSortByActivity` isn't called. `hydrated` stays false. Button stays disabled forever (until next app launch).
+
+**N2 (NOTE)**: This is a **pre-existing all-or-nothing failure mode** of `onMount`, not introduced by this PR. Without the new toggle, the SAME failure of `get()` would skip every line below it (line 70 `raiseTerminalEnabled = ...`, line 72 `sidebarStyle`, line 76 `setAlwaysOnTop`, line 86 `applyWindowLayout`, line 90 `settingsStore.load()`, line 113 `SessionAPI.list()`, line 148+ event listeners). Many other things would already be broken in that scenario — sidebar essentially non-functional. Looking at `commands/config.rs:23-29`, `get_settings` essentially never fails in practice (clones in-memory state, strips root_token, returns Ok). The trigger would require a Tauri runtime catastrophe. Acceptable as-is per pre-existing pattern.
+
+**Concurrent `markActivity` and `toggleCoordSortByActivity`**:
+
+JavaScript is single-threaded. `markActivity` is synchronous (just `setState`). `toggleCoordSortByActivity` is async with awaits.
+
+Trace of concurrent activity:
+1. User clicks. `toggleCoordSortByActivity` starts. setToggleInFlight(true). Optimistic flip. `await SettingsAPI.get()` yields.
+2. During the await, an `onSessionIdle` event arrives. `markActivity(id)` runs synchronously: `setState("lastActivityBySessionId", ...)`. Map updated. Memo re-runs with new coord (true) AND new map. UI updates.
+3. `get()` resolves. `await SettingsAPI.update(...)` starts. Yields again.
+4. Another `markActivity` could run. Same: synchronous, atomic. Memo re-runs with latest state.
+5. `update()` resolves. `void settingsStore.refresh()`. setToggleInFlight(false). Function exits.
+
+No partial state of `lastActivityBySessionId` is observable by the memo, because each `setState` callback `(prev) => ({...prev, [id]: now})` runs atomically. The memo always sees a consistent snapshot. ✓
+
+### Defensive handling of edge inputs (item 4) ✓
+
+**`markActivity(id)` with empty string or special chars**: just used as an object key. JS object keys are strings; any string works. Empty string `""` would create an entry `{"": ts}` that never matches a real session id (UUIDs are non-empty). Orphan entry, same as L5 — harmless.
+
+**`toggleCoordSortByActivity` with `current` missing fields**: `{ ...current, coordSortByActivity: next }` spreads whatever properties exist on `current` and overrides `coordSortByActivity`. If `current` lacks required fields (e.g., `defaultShell`), the Rust deserializer in `update_settings` rejects the JSON (no serde default for `defaultShell`). The error returns to the catch block, which reverts the optimistic flip and logs. User-visible: button bounces back to OFF, console error. Acceptable.
+
+**`update` succeeds but `void settingsStore.refresh()` rejects**: `void` discards the promise synchronously. The next statement (end of try block) runs immediately. `finally` runs `setToggleInFlight(false)` BEFORE refresh's promise can reject. If refresh later rejects, it's an unhandled rejection — browser logs it but the app continues. settingsStore is stale until next refresh, but sessionsStore is the source of truth for the toggle. No leak path. ✓
+
+**Programmatic `.click()` on disabled button**: per HTML spec, calling `.click()` on a button with `disabled` attribute does NOT fire a click event. Confirmed. However, dispatching a synthetic event via `button.dispatchEvent(new MouseEvent('click'))` MAY fire on disabled elements in some browsers. The defense-in-depth `if (!state.hydrated) return;` and `if (toggleInFlight()) return;` early-returns inside `toggleCoordSortByActivity` close that gap — synthetic dispatch hits the handler but immediately exits. ✓
+
+### CSS regression (item 5) ✓
+
+The new `.coord-sort-activity-btn` rules at `sidebar.css:527-539` use a single-class selector. Specificity = 0,1,0. No higher-specificity rule overrides them. Cascade order: declarations after the existing `.show-categories-btn` block, before `.session-item-close`. No conflict.
+
+Theme overrides: grepped — no per-style block references `.coord-sort-activity-btn`. The base rules render consistently across all 7 sidebar styles. ✓
+
+`:disabled` styling: the new rules don't define `:disabled` state. During pre-hydration, the button uses browser-default disabled appearance (typically reduced opacity). Combined with the base `opacity: 0.4`, the cascade produces a visibly distinct state. Path 6.5 step 19b's "the cursor does not change to `pointer`" is the relevant verification: browsers natively suppress hover effects on disabled buttons. ✓
+
+Layout at narrow widths: §15.5 noted +22px for the 5th icon. §15.7 added Path 8 narrow-sidebar test. Pre-existing v0 already had similar behavior with 4 icons — out of scope for this PR. No new regression introduced.
+
+### Phase split coherence at SHA level (item 6) ✓
+
+I verified by checking out each SHA and running both build commands.
+
+| SHA | Files changed | `cargo check` | `npx tsc --noEmit` | `cargo test` (new tests) |
+|---|---|---|---|---|
+| `415dc9f` (Phase A intermediate) | `settings.rs` only | ✓ | ✓ | ✓ both pass |
+| `eb73238` (HEAD) | All 6 frontend files | ✓ | ✓ | ✓ both pass |
+
+**N3 (NOTE)**: The dev's commit split (Rust alone, then everything-else) deviates from the plan's stated split (Rust + types + sessions store in Phase A, UI in Phase B). Both intermediate states build clean. The dev's split is even more conservative — `npx tsc --noEmit` at `415dc9f` works because no TS files changed (matches main). The plan's split would have required `415dc9f` to include `types.ts` AND `sessions.ts` to keep the build green; the dev's choice avoids that coordination by bundling all TS work into one commit.
+
+Functionally equivalent. The H1 risk (TS interface + initializer mismatch) doesn't manifest at any intermediate state. Both strategies are correct. The dev should be aware that the implementation deviates from the plan's stated phase boundary, but the result is equally valid.
+
+### Manual UI verification gap (item 7) ✓ partial replacement
+
+**N4 (NOTE)**: dev-webpage-ui couldn't run `npm run tauri dev`. The §11 testing checklist (paths 1-9, plus the round-2 regression paths 5.5 and 6.5) is OUTSTANDING.
+
+What I CAN statically replace:
+- ✓ TypeScript build (`npx tsc --noEmit`): no errors at HEAD or at `415dc9f`.
+- ✓ Rust build (`cargo check`): clean at both SHAs.
+- ✓ New Rust tests (`cargo test config::settings::tests::coord_sort_by_activity`): both pass.
+- ✓ Plan-vs-code anchor verification (above table).
+- ✓ Reactivity tracing (above analyses).
+- ✓ Race condition analysis (single-threaded JS, no observable partial states).
+
+What I CAN'T replace:
+- ✗ Visual confirmation that the 🔥 button is leftmost in `.action-bar-icons`.
+- ✗ Visual confirmation that the button gets the `.active` class on toggle ON.
+- ✗ Visual confirmation of the busy→idle reorder at <1 reactive tick.
+- ✗ Path 5.5 (rapid-click serialization timing).
+- ✗ Path 6.5 (hydration window disabled state).
+- ✗ Path 8 (narrow sidebar layout).
+- ✗ Path 9 (no regression on other UI).
+
+The shipper or a human user must run `npm run tauri dev` and exercise §11 before declaring the feature complete. Static correctness gives moderate confidence the wiring is right, but not full confidence the UX matches spec.
+
+### Attack vector verdicts (the 7 items above)
+
+| # | Item | Verdict |
+|---|---|---|
+| 1 | Plan-vs-code drift | ✓ minor (assertion form, JSDoc; both harmless) |
+| 2 | Reactivity correctness | ✓ |
+| 3 | Race conditions | ✓ (with 2 NOTES: setState batching, get() rejection — neither blocks) |
+| 4 | Defensive edge inputs | ✓ |
+| 5 | CSS regression | ✓ |
+| 6 | Phase split coherence | ✓ (with 1 NOTE: implementation split differs from plan's; both build clean) |
+| 7 | Manual UI verification gap | ✓ partial (static checks pass; visual confirmation outstanding) |
+
+All items ✓ or ✓ with NOTE-level annotation. No HIGH or MED bugs.
+
+### Final recommendation
+
+**APPROVE → Step 8 (shipper).**
+
+The four NOTES (N1-N4) are documentation-quality observations, not blockers. Optional follow-ups:
+
+- N1: wrap `setCoordSortByActivity`'s two writes in `batch()` for future-proofing if a future consumer reads both atomically. One-line change.
+- N2: consider adding a top-level try/catch around the `onMount` body to log+continue on `SettingsAPI.get()` rejection rather than leaving the sidebar half-initialized. Pre-existing concern, separate PR.
+- N3: implementation phase split deviates from plan; both build clean. Document the deviation in the PR description if it matters for code archaeology.
+- N4: manual UI verification (§11) outstanding. Shipper or user must run the testing checklist before declaring complete.
+
+I have nothing further to attack on this implementation.
