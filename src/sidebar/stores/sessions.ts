@@ -3,6 +3,10 @@ import { createStore } from "solid-js/store";
 import { NO_TEAM } from "../../shared/constants";
 import type { RepoMatch, Session, SessionRepo, SessionsState, Team, TeamSessionGroup } from "../../shared/types";
 import { projectStore } from "./project";
+import { SettingsAPI } from "../../shared/ipc";
+import { settingsStore } from "../../shared/stores/settings";
+
+const [toggleInFlight, setToggleInFlight] = createSignal(false);
 
 const [state, setState] = createStore<SessionsState>({
   sessions: [],
@@ -12,6 +16,9 @@ const [state, setState] = createStore<SessionsState>({
   showInactive: false,
   showCategories: true,
   repos: [],
+  coordSortByActivity: false,
+  lastActivityBySessionId: {},
+  hydrated: false,
 });
 
 function normalizePath(p: string): string {
@@ -332,6 +339,46 @@ export const sessionsStore = {
 
   toggleShowCategories() {
     setState("showCategories", !state.showCategories);
+  },
+
+  get coordSortByActivity() {
+    return state.coordSortByActivity;
+  },
+  get lastActivityBySessionId() {
+    return state.lastActivityBySessionId;
+  },
+  get hydrated() {
+    return state.hydrated;
+  },
+  get toggleInFlight() {
+    return toggleInFlight();
+  },
+
+  setCoordSortByActivity(value: boolean) {
+    setState("coordSortByActivity", value);
+    setState("hydrated", true);
+  },
+
+  async toggleCoordSortByActivity() {
+    if (!state.hydrated) return;
+    if (toggleInFlight()) return;
+    setToggleInFlight(true);
+    const next = !state.coordSortByActivity;
+    setState("coordSortByActivity", next);
+    try {
+      const current = await SettingsAPI.get();
+      await SettingsAPI.update({ ...current, coordSortByActivity: next });
+      void settingsStore.refresh();
+    } catch (e) {
+      console.error("[coord-sort] Failed to persist coordSortByActivity:", e);
+      setState("coordSortByActivity", !next);
+    } finally {
+      setToggleInFlight(false);
+    }
+  },
+
+  markActivity(sessionId: string) {
+    setState("lastActivityBySessionId", (prev) => ({ ...prev, [sessionId]: performance.now() }));
   },
 
   toggleTeamCollapsed(teamId: string) {
