@@ -12,6 +12,7 @@ pub mod voice;
 pub mod web;
 
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex, OnceLock};
 
 use commands::ac_discovery::DiscoveryBranchWatcher;
@@ -80,6 +81,13 @@ impl MasterToken {
         &self.0
     }
 }
+
+/// §224 A.2.5 / G1 — set true while the post-startup session-restore loop is
+/// running (`lib.rs` setup task that calls `create_session_inner` for every
+/// persisted session). Read by `mailbox::handle_close_session` to decide
+/// whether `session_ids.is_empty()` means "no live session for this FQN" or
+/// "restore loop hasn't reached this session yet — retry briefly."
+pub struct RestoreInProgress(pub AtomicBool);
 
 /// Instance-private outbox directory. Only this app instance polls it.
 /// Created at startup, path printed to stdout alongside master token.
@@ -250,6 +258,7 @@ pub fn run() {
         .manage(rtk_sweep_lock)
         .manage(rtk_startup_mode)
         .manage(shutdown_signal)
+        .manage(Arc::new(RestoreInProgress(AtomicBool::new(false))))
         .setup(move |app| {
             use tauri::WebviewWindowBuilder;
             use tauri::WebviewUrl;
@@ -411,6 +420,42 @@ pub fn run() {
                 });
             }
 
+            // §224 A.2.5 / G-IMPL-1 — Set restore_in_progress=TRUE BEFORE the
+            // mailbox poller starts, when persisted sessions will be restored.
+            //
+            // SEQUENCE-CRITICAL: `MailboxPoller::start()` spawns a tokio worker
+            // task that runs its first poll WITHOUT delay (mailbox.rs:200-204)
+            // in parallel with the rest of setup() on the main thread. If a
+            // close-session message is queued in any outbox at startup, that
+            // first poll picks it up. With the flag stuck false, the race-
+            // guard wait loop in handle_close_session (§A.2.5,
+            // mailbox.rs:1201-1242) is bypassed → status="no_match" instead
+            // of "restore_in_progress", AND the A.7 cleanup (mailbox.rs:1293-
+            // 1311) drops the failed-recoverable ghosts the restore loop was
+            // about to retry. This recreates the exact silent-success bug
+            // #224 was filed to fix.
+            //
+            // Hoisting the flag set above mailbox_poller.start() closes the
+            // race window. The restore task spawned below (§A.2.5 RAII guard)
+            // is still responsible for clearing the flag when restore
+            // completes (or panics).
+            //
+            // The matching `load_sessions()` call at the original site is
+            // removed; `persisted` is reused below by `if !persisted.is_empty()`.
+            let persisted = sessions_persistence::load_sessions();
+            if !persisted.is_empty() {
+                let restore_flag = app
+                    .state::<Arc<RestoreInProgress>>()
+                    .inner()
+                    .clone();
+                restore_flag
+                    .0
+                    .store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            // If persisted.is_empty(), the flag stays at its init value of
+            // false (lib.rs:258) — no restore task will spawn, so the race-
+            // guard wait would be pointless.
+
             // Start the mailbox poller for inter-agent message delivery
             let mailbox_poller = phone::mailbox::MailboxPoller::new();
             mailbox_poller.start(app.handle().clone(), shutdown_for_setup.clone());
@@ -565,7 +610,10 @@ pub fn run() {
             let _ = &main_win;
 
             // Restore sessions from last run
-            let persisted = sessions_persistence::load_sessions();
+            //
+            // §224 G-IMPL-1 — `persisted` and `restore_flag` are hoisted above
+            // mailbox_poller.start() (see comment block there). `persisted` is
+            // reused here; the flag is already TRUE when we enter this block.
             if !persisted.is_empty() {
                 use tauri::Manager;
                 let session_mgr_clone = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>().inner().clone();
@@ -580,7 +628,29 @@ pub fn run() {
                     vec![]
                 };
 
+                // §224 A.2.5 — RAII guard inside the closure clears the flag
+                // on normal exit AND on panic unwind so the daemon can't get
+                // stuck advertising "still restoring" forever.
+                //
+                // §224 G-IMPL-1 — the upper hoisted block already set the flag
+                // TRUE before mailbox_poller.start(); we only need to grab a
+                // fresh Arc clone here for the RAII guard inside the spawned task.
+                let restore_flag_for_task = app
+                    .state::<Arc<RestoreInProgress>>()
+                    .inner()
+                    .clone();
+
                 tauri::async_runtime::spawn(async move {
+                    struct RestoreGuard(Arc<RestoreInProgress>);
+                    impl Drop for RestoreGuard {
+                        fn drop(&mut self) {
+                            self.0
+                                 .0
+                                .store(false, std::sync::atomic::Ordering::SeqCst);
+                        }
+                    }
+                    let _restore_guard = RestoreGuard(restore_flag_for_task);
+
                     let mut active_id = None;
                     let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
 
@@ -911,10 +981,6 @@ pub fn run() {
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
 
-                    // Issue #231: remove daemon.pid before tearing down so a
-                    // subsequent CLI invocation sees NoPidFile (not StalePidFile).
-                    crate::config::daemon_pid::remove_pid_file();
-
                     log::info!("[shutdown] Persisting session state...");
                     let mgr_clone = session_mgr_for_exit.clone();
                     tauri::async_runtime::block_on(async move {
@@ -922,6 +988,13 @@ pub fn run() {
                         sessions_persistence::persist_current_state(&mgr).await;
                     });
                     log::info!("[shutdown] Session state persisted, process exiting");
+
+                    // Issue #231 + grinch G-LOW (#246): remove daemon.pid AFTER
+                    // persist_current_state so a concurrent CLI invocation never
+                    // observes NoPidFile while sessions.json is being rewritten.
+                    // Still runs before process exit — subsequent CLI invocations
+                    // see NoPidFile (not StalePidFile) once we return.
+                    crate::config::daemon_pid::remove_pid_file();
                 }
                 _ => {}
             }
