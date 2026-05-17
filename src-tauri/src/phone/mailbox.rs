@@ -909,7 +909,18 @@ impl MailboxPoller {
             // against the dominant single-`\r`-eaten failure mode that
             // motivated #233.
             let cmd_text = format!("/{}", command); // NO trailing \r — the injector adds it
-            crate::pty::inject::inject_text_into_session(app, session_id, &cmd_text).await?;
+            crate::pty::inject::inject_text_into_session(app, session_id, &cmd_text)
+                .await
+                .map_err(|e| {
+                    log::error!(
+                        "[mailbox] PTY injection FAILED for command '/{}' session={} msg={}: {}",
+                        command,
+                        session_id,
+                        msg.id,
+                        e
+                    );
+                    e
+                })?;
 
             log::info!(
                 "Executed remote command '{}' on session {} (from: {})",
