@@ -14,6 +14,50 @@ use crate::session::manager::SessionManager;
 use crate::session::session::SessionStatus;
 use crate::{AppOutbox, MasterToken};
 
+/// If `outbox_file` lives at
+/// `<project_dir>/.ac-new/wg-<N>-*/__agent_*/<local-dir>/outbox/<file>.json`,
+/// return `project_dir` as a UTF-8 `String`. Otherwise, `None`.
+///
+/// Mirrors the WG-replica walk-up in `cli::send::derive_root_project_dir` so
+/// the mailbox can resolve qualified WG-peer FQNs against the same root-walk-up
+/// source the sending CLI used (and the same source `list_peers::detect_wg_replica`
+/// uses to report siblings as `reachable: true`). In-memory only — settings.json
+/// is NOT mutated. See #228 D1-a.
+///
+/// The path layout is fixed by `MailboxPoller::poll` which constructs outbox
+/// paths as `Path::new(<all_paths-entry>).join(agent_local_dir_name()).join("outbox")`.
+/// We walk ancestors: `<file>.json` → `outbox` → `<local-dir>` → `<__agent_*>` →
+/// `<wg-*>` → `<.ac-new>` → `<project_dir>`.
+///
+/// Uses `to_str()?` (NOT `to_string_lossy()`) for parity with
+/// `list_peers::detect_wg_replica`. Keep this in lockstep with
+/// `cli::send::derive_root_project_dir`.
+fn derive_project_from_outbox_path(outbox_file: &Path) -> Option<String> {
+    let canon = std::fs::canonicalize(outbox_file).ok()?;
+    // canon = <project>/.ac-new/wg-*/__agent_*/<local-dir>/outbox/<file>.json
+    let outbox_dir = canon.parent()?; // .../outbox
+    if outbox_dir.file_name().and_then(|n| n.to_str()) != Some("outbox") {
+        return None;
+    }
+    let local_dir = outbox_dir.parent()?; // .../<local-dir>
+    let agent_dir = local_dir.parent()?; // .../__agent_*
+    let agent_name = agent_dir.file_name().and_then(|n| n.to_str())?;
+    if !agent_name.starts_with("__agent_") {
+        return None;
+    }
+    let wg_dir = agent_dir.parent()?; // .../wg-*
+    let wg_name = wg_dir.file_name().and_then(|n| n.to_str())?;
+    if !wg_name.starts_with("wg-") {
+        return None;
+    }
+    let ac_new_dir = wg_dir.parent()?; // .../.ac-new
+    if ac_new_dir.file_name().and_then(|n| n.to_str()) != Some(".ac-new") {
+        return None;
+    }
+    let project_dir = ac_new_dir.parent()?; // .../<project>
+    Some(project_dir.to_str()?.to_string())
+}
+
 /// Tracks delivery attempts for a single outbox message.
 struct RetryState {
     attempt_count: u32,
@@ -492,12 +536,32 @@ impl MailboxPoller {
         // (2) Canonicalize msg.to via the shared resolver. Empty `to` is allowed for
         // action-dispatch paths (e.g. close-session may set an empty to); skip in
         // that case. Reject-on-ambiguity semantics match the CLI (Decision 2 rule 2c).
+        //
+        // §AR2-norm D1-a augmentation: when the outbox file lives under a WG-replica
+        // layout (`<project>/.ac-new/wg-*/__agent_*/<local-dir>/outbox/<file>.json`),
+        // include the derived `<project>` in the in-memory `paths` slice so qualified
+        // WG-peer FQNs written by `cli::send` (which performs the symmetric walk-up
+        // augmentation — see #228 Step 1) resolve here too. Without this, the daemon
+        // re-rejects with `UnknownQualified` even though the CLI side succeeded.
+        // settings.json is NOT mutated. In-memory, this-message only. See #228 D1-a.
         if !msg.to.is_empty() {
-            let paths = {
+            let mut paths = {
                 let cfg = app.state::<SettingsState>();
                 let c = cfg.read().await;
                 c.project_paths.clone()
             };
+            if let Some(root_project) = derive_project_from_outbox_path(path) {
+                let canon_root_project = std::fs::canonicalize(&root_project).ok();
+                let already_present = paths.iter().any(|p| match &canon_root_project {
+                    Some(canon_target) => {
+                        std::fs::canonicalize(p).ok().as_ref() == Some(canon_target)
+                    }
+                    None => p == &root_project,
+                });
+                if !already_present {
+                    paths.push(root_project);
+                }
+            }
             match crate::config::teams::resolve_agent_target(&msg.to, &paths) {
                 Ok(fqn) => {
                     if fqn != msg.to {
@@ -2724,6 +2788,60 @@ mod tests {
     #[test]
     #[ignore = "integration: full CLI + mailbox + two-project fixture"]
     fn resolve_to_target_round_trip_integration() {}
+
+    // ── #228 D1-a — derive_project_from_outbox_path tests ──
+
+    #[test]
+    fn derive_project_from_outbox_path_walks_up_wg_replica_layout() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project_dir = temp.path().join("proj-x");
+        let outbox = project_dir
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice")
+            .join(".agentscommander") // matches agent_local_dir_name() shape
+            .join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        let file = outbox.join("msg-42.json");
+        std::fs::write(&file, "{}").unwrap();
+
+        let got =
+            derive_project_from_outbox_path(&file).expect("should derive project from WG layout");
+        let expected = std::fs::canonicalize(&project_dir)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn derive_project_from_outbox_path_rejects_non_wg_layout() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // A path with the right tail but missing the `.ac-new` ancestor.
+        let outbox = temp
+            .path()
+            .join("random")
+            .join(".agentscommander")
+            .join("outbox");
+        std::fs::create_dir_all(&outbox).unwrap();
+        let file = outbox.join("msg.json");
+        std::fs::write(&file, "{}").unwrap();
+        assert!(derive_project_from_outbox_path(&file).is_none());
+    }
+
+    #[test]
+    fn derive_project_from_outbox_path_rejects_app_outbox_layout() {
+        // App-outbox lives at <config_dir>/app-outbox/<file>.json — no
+        // `__agent_*` / `wg-*` ancestors. Helper must return None so app-outbox
+        // messages are NOT augmented (they have their own master-token bypass).
+        let temp = tempfile::TempDir::new().unwrap();
+        let app_outbox = temp.path().join("config").join("app-outbox");
+        std::fs::create_dir_all(&app_outbox).unwrap();
+        let file = app_outbox.join("msg.json");
+        std::fs::write(&file, "{}").unwrap();
+        assert!(derive_project_from_outbox_path(&file).is_none());
+    }
 
     // ── Issue #223 deliver_wake integration placeholders ──
 

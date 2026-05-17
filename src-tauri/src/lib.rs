@@ -151,6 +151,9 @@ pub fn run() {
         let _ = std::fs::write(dir.join("app-outbox-path.txt"), app_outbox.path());
     }
 
+    // Issue #231: write daemon.pid so CLI verbs can detect a dead daemon.
+    config::daemon_pid::write_pid_file();
+
     // Create WS broadcaster (shared between Tauri commands and web server)
     let broadcaster = WsBroadcaster::new();
 
@@ -985,6 +988,13 @@ pub fn run() {
                         sessions_persistence::persist_current_state(&mgr).await;
                     });
                     log::info!("[shutdown] Session state persisted, process exiting");
+
+                    // Issue #231 + grinch G-LOW (#246): remove daemon.pid AFTER
+                    // persist_current_state so a concurrent CLI invocation never
+                    // observes NoPidFile while sessions.json is being rewritten.
+                    // Still runs before process exit — subsequent CLI invocations
+                    // see NoPidFile (not StalePidFile) once we return.
+                    crate::config::daemon_pid::remove_pid_file();
                 }
                 _ => {}
             }

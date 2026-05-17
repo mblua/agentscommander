@@ -25,7 +25,8 @@ External edits between our read and our write are detected and the verb aborts.\
 TITLE INPUT: --title is a single-line string. Embedded \\n / \\r / NUL / other \
 control characters (except tab) are rejected.")]
 pub struct BriefSetTitleArgs {
-    /// Session token for authentication (from AGENTSCOMMANDER_TOKEN)
+    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
     pub token: Option<String>,
 
@@ -121,7 +122,7 @@ pub fn execute(args: BriefSetTitleArgs) -> i32 {
                 std::process::id(),
                 bp.display()
             );
-            println!("BRIEF.md title updated; backup: {}", bp.display());
+            crate::cli_println!("BRIEF.md title updated; backup: {}", bp.display());
             0
         }
         Ok(EditOutcome::Wrote { backup: None }) => {
@@ -131,7 +132,7 @@ pub fn execute(args: BriefSetTitleArgs) -> i32 {
                 wg_root.display(),
                 std::process::id()
             );
-            println!("BRIEF.md created; no prior content to back up");
+            crate::cli_println!("BRIEF.md created; no prior content to back up");
             0
         }
         Ok(EditOutcome::NoOp) => {
@@ -141,7 +142,7 @@ pub fn execute(args: BriefSetTitleArgs) -> i32 {
                 wg_root.display(),
                 std::process::id()
             );
-            println!("BRIEF.md unchanged (title value already matches)");
+            crate::cli_println!("BRIEF.md unchanged (title value already matches)");
             0
         }
         Err(e) => {

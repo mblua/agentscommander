@@ -39,7 +39,8 @@ NOTES:\n  \
 All agents that belong to your team(s) are listed. Agents you cannot directly\n\
 message are included with reachable=false. If you have no teams, the result is an empty array.")]
 pub struct ListPeersArgs {
-    /// Session token for authentication (from AGENTSCOMMANDER_TOKEN)
+    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated only; this verb
+    /// reads disk state and does not authorize per-token. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
     pub token: Option<String>,
 
@@ -595,7 +596,7 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
 
     match serde_json::to_string_pretty(&peers) {
         Ok(json) => {
-            println!("{}", json);
+            crate::cli_println!("{}", json);
             0
         }
         Err(e) => {
@@ -817,7 +818,7 @@ pub fn execute(args: ListPeersArgs) -> i32 {
     // Output as JSON
     match serde_json::to_string_pretty(&peers) {
         Ok(json) => {
-            println!("{}", json);
+            crate::cli_println!("{}", json);
             0
         }
         Err(e) => {

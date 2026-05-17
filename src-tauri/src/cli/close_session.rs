@@ -51,16 +51,16 @@ fn print_status_prose(content: &str) {
         .unwrap_or("");
     match resp.get("status").and_then(|v| v.as_str()) {
         Some("no_match") => {
-            println!("No sessions matched '{}' — nothing to close.", target);
+            crate::cli_println!("No sessions matched '{}' — nothing to close.", target);
         }
         Some("already_closed") => {
-            println!(
+            crate::cli_println!(
                 "Session for '{}' already closed (raced before destroy).",
                 target
             );
         }
         Some("restore_in_progress") => {
-            println!(
+            crate::cli_println!(
                 "Daemon is still restoring sessions; '{}' may exist once restore completes. \
                  Retry in a few seconds.",
                 target
@@ -82,7 +82,8 @@ Use --force to skip graceful shutdown and kill immediately.\n\n\
 DISCOVERY: Use `list-peers` to get valid agent names. The `name` field of \
 each entry is the canonical FQN to pass to --target.")]
 pub struct CloseSessionArgs {
-    /// Session token for authentication (from AGENTSCOMMANDER_TOKEN)
+    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
     pub token: Option<String>,
 
@@ -287,7 +288,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         if response_path.exists() {
             match std::fs::read_to_string(&response_path) {
                 Ok(content) => {
-                    println!("{}", content);
+                    crate::cli_println!("{}", content);
                     // §224 G7 — print a human-readable prose line for no_match
                     // / already_closed / restore_in_progress so AC #2's
                     // "stdout message such as `No sessions matched ...`" lands
