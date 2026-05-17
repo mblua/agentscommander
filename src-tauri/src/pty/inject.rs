@@ -13,7 +13,7 @@ use crate::session::manager::SessionManager;
 /// The shell may be a bare name ("claude") or a full path
 /// ("C:\Users\...\.claude\local\claude.exe"), so we extract the filename stem
 /// before matching.
-fn needs_explicit_enter(shell: &str) -> bool {
+pub(crate) fn needs_explicit_enter(shell: &str) -> bool {
     let stem = std::path::Path::new(shell.trim())
         .file_stem()
         .and_then(|s| s.to_str())
@@ -109,4 +109,54 @@ pub async fn inject_text_into_session(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::needs_explicit_enter;
+
+    #[test]
+    fn agent_clis_require_explicit_enter() {
+        for shell in [
+            "codex",
+            "codex.exe",
+            "codex.cmd",
+            "Codex",
+            "CODEX",
+            "C:\\Users\\maria\\.codex\\codex.exe",
+            "/usr/local/bin/codex",
+            "claude",
+            "claude.exe",
+            "C:\\Users\\maria\\.claude\\local\\claude.exe",
+            "gemini",
+            "gemini.exe",
+            "  codex  ", // leading/trailing whitespace tolerated
+        ] {
+            assert!(
+                needs_explicit_enter(shell),
+                "expected true for shell={:?}",
+                shell
+            );
+        }
+    }
+
+    #[test]
+    fn plain_shells_do_not_require_explicit_enter() {
+        for shell in [
+            "bash",
+            "powershell.exe",
+            "pwsh",
+            "pwsh.exe",
+            "cmd.exe",
+            "zsh",
+            "",
+            "   ",
+        ] {
+            assert!(
+                !needs_explicit_enter(shell),
+                "expected false for shell={:?}",
+                shell
+            );
+        }
+    }
 }

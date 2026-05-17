@@ -980,14 +980,30 @@ impl MailboxPoller {
     ) -> Result<(), String> {
         let pty_mgr = app.state::<Arc<Mutex<PtyManager>>>();
 
-        // ── Remote command path: write /<command>\r directly, no framing ──
+        // ── Remote command path: delegate to the canonical injector ──
+        // `/clear` and `/compact` are submitted to the agent's PTY exactly the
+        // same way as a normal message body: through `inject_text_into_session`,
+        // which owns shell detection and the agent-specific double-Enter safety
+        // net (see pty/inject.rs). The injector — not this branch — appends the
+        // Enter(s); we pass just the `/command` text.
         if let Some(ref command) = msg.command {
             const ALLOWED_COMMANDS: &[&str] = &["clear", "compact"];
             if !ALLOWED_COMMANDS.contains(&command.as_str()) {
                 return Err(format!("Unsupported remote command '{}'", command));
             }
 
-            // Precondition: agent must be idle (waiting_for_input)
+            // Precondition: agent must be idle (waiting_for_input) AND the
+            // shell must be a coding-agent CLI that owns explicit-Enter
+            // handling in the canonical injector. The shell check guards
+            // against silent failure on non-agent shells (plain bash/pwsh)
+            // and on cmd-wrapped Codex sessions: under R1 the injector
+            // sends ZERO carriage returns when `needs_explicit_enter` is
+            // false, so writing `/clear` into such a shell would leave the
+            // text un-submitted and let subsequent user input concatenate
+            // with it. Reject explicitly instead — closes grinch's G1 + G3.
+            // Removing this reject requires extending `needs_explicit_enter`
+            // to recognize the rejected case as agent-aware first; see
+            // `#233-followup-cmd-wrapper`.
             {
                 let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
                 let mgr = session_mgr.read().await;
@@ -999,29 +1015,56 @@ impl MailboxPoller {
                             session_id, command
                         ))
                     }
+                    Some(s) if !crate::pty::inject::needs_explicit_enter(&s.shell) => {
+                        return Err(format!(
+                            "Cannot execute remote command '/{}': session shell '{}' is not a coding-agent CLI (Claude / Codex / Gemini). cmd / pwsh wrappers around an agent are tracked separately as #233-followup-cmd-wrapper.",
+                            command, s.shell
+                        ))
+                    }
                     Some(s) if !s.waiting_for_input => {
                         return Err(format!(
                             "Cannot execute remote command '{}': agent is busy (not idle)",
                             command
                         ))
                     }
-                    _ => {} // idle — proceed
+                    _ => {} // idle agent-shell — proceed
                 }
             }
 
-            // Write /<command>\r directly to PTY stdin.
-            // Note: there is a small race window between the idle check above and
-            // this write — the agent could become busy on a separate task. This is
-            // inherent to a polling-based idle model and is acceptable for /clear
-            // and /compact which Claude Code processes even if mid-prompt.
-            let cmd_bytes = format!("/{}\r", command);
-            {
-                let mgr = pty_mgr
-                    .lock()
-                    .map_err(|e| format!("PTY lock failed: {}", e))?;
-                mgr.write(session_id, cmd_bytes.as_bytes())
-                    .map_err(|e| format!("PTY write failed for remote command: {}", e))?;
-            }
+            // Submit `/<command>` via the canonical text-block injector.
+            //
+            // TOCTOU note (round-2 correction): the gap between the idle check
+            // above and the FINAL `\r` is now ~2 s (text → 1500 ms → \r →
+            // 500 ms → \r inside `inject_text_into_session`), not microseconds
+            // as the original direct-write path. Two things can interleave
+            // inside that window:
+            //   1. User keystrokes from xterm.js — they take the path
+            //      `frontend → invoke("pty_write") → commands/pty.rs::pty_write
+            //      → PtyManager::write` (raw bytes, bypasses the injector). A
+            //      user typing between the staggered Enters concatenates with
+            //      the un-Enter'd `/<command>`.
+            //   2. The idle detector flipping `waiting_for_input` to false
+            //      based on independent PTY output, leaving the second `\r`
+            //      to land on a busy agent (harmless — at worst an extra
+            //      Enter on empty input, per pty/inject.rs:78-79).
+            // We accept this race because the standard-message path at
+            // mailbox.rs:972 already exhibits it identically and the
+            // staggered double-Enter is the empirically-tuned defense
+            // against the dominant single-`\r`-eaten failure mode that
+            // motivated #233.
+            let cmd_text = format!("/{}", command); // NO trailing \r — the injector adds it
+            crate::pty::inject::inject_text_into_session(app, session_id, &cmd_text)
+                .await
+                .map_err(|e| {
+                    log::error!(
+                        "[mailbox] PTY injection FAILED for command '/{}' session={} msg={}: {}",
+                        command,
+                        session_id,
+                        msg.id,
+                        e
+                    );
+                    e
+                })?;
 
             log::info!(
                 "Executed remote command '{}' on session {} (from: {})",
