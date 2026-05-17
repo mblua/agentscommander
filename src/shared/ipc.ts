@@ -53,9 +53,11 @@ export interface RestartSessionOptions {
   /**
    * Forwarded to the backend `restart_session` command. Omit (or pass `true`)
    * for a true user-intent restart that starts a fresh conversation. Pass
-   * `false` when waking a deferred session (PTY exited due to
-   * `startOnlyCoordinators: true`) to allow provider auto-resume
-   * (`claude --continue`, `codex resume --last`, `gemini --resume latest`).
+   * `false` when waking a deferred session — a session whose PTY is `Exited`
+   * either because it was deferred at startup (new-policy default, or the
+   * coord-was-asleep-at-shutdown branch of `restoreCoordinatorWakeState`) or
+   * because the user closed it during the prior run — to allow provider
+   * auto-resume (`claude --continue`, `codex resume --last`, `gemini --resume latest`).
    */
   skipAutoResume?: boolean;
 }
