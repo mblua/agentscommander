@@ -62,11 +62,13 @@ TOKEN VALIDATION MODEL: The CLI validates token SHAPE only (root token, master t
 or any valid UUID). Per-session tokens are authoritative at the daemon mailbox boundary, \
 not in the CLI. A UUID issued by a different binary instance will pass the CLI's shape \
 check but will be REJECTED by the daemon's mailbox (write-path verbs like `send`, \
-`close-session`, `brief-set-title`, `brief-append-body`). Read-only verbs (`list-peers`, \
-`list-sessions`) REQUIRE a token but accept ANY UUID-shaped value at the CLI boundary — \
-the token value is not consulted for authorization at the CLI. These verbs read disk \
-state directly (from `--root` and the binary's per-binary config directory); authorization \
-of any specific UUID happens only at the daemon mailbox, which write-path verbs invoke.\n\n\
+`close-session`, `brief-set-title`, `brief-append-body`). Read-only verb `list-peers` \
+REQUIRES a token but accepts ANY UUID-shaped value at the CLI boundary — the token value \
+is not consulted for authorization at the CLI. It reads disk state directly (from \
+`--root` and the binary's per-binary config directory); authorization of any specific \
+UUID happens only at the daemon mailbox, which write-path verbs invoke. `list-sessions` \
+does not take a token; it reads `sessions.json` from the binary's config directory \
+directly and never contacts the daemon mailbox.\n\n\
 EXIT CODES: All subcommands return 0 on success, 1 on error.\n\n\
 AGENT NAMES: Agents are identified by their path-based name (e.g., \"repos/my-project\"). \
 Use `list-peers` to discover valid agent names before sending messages.")]
