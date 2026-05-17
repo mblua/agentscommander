@@ -17,7 +17,8 @@ If the agent doesn't exit within --timeout seconds, it falls back to force-kill.
 Use --force to skip graceful shutdown and kill immediately.\n\n\
 DISCOVERY: Use `list-peers` to get valid agent names for --target.")]
 pub struct CloseSessionArgs {
-    /// Session token for authentication (from AGENTSCOMMANDER_TOKEN)
+    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
     pub token: Option<String>,
 
@@ -201,7 +202,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         if response_path.exists() {
             match std::fs::read_to_string(&response_path) {
                 Ok(content) => {
-                    println!("{}", content);
+                    crate::cli_println!("{}", content);
                     // Parse response: exit 1 if no sessions were actually closed
                     if let Ok(resp) = serde_json::from_str::<serde_json::Value>(&content) {
                         let closed = resp
@@ -222,7 +223,7 @@ pub fn execute(args: CloseSessionArgs) -> i32 {
         }
         if resp_start.elapsed() >= resp_timeout {
             // Delivery succeeded but response timed out — sessions were likely closed
-            println!(
+            crate::cli_println!(
                 "close-session delivered but response timed out (sessions may have been closed)"
             );
             return 0;

@@ -76,6 +76,46 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
         }
     }
 
+    // Issue #231: detect whether the daemon is running before trusting
+    // sessions.json. Warn on stderr if not — preserve stdout JSON and exit 0.
+    //
+    // When the caller filters by `--status exited`, the natural expectation is
+    // that the daemon may already be dead (exited sessions are the leftover
+    // state). Suppress the stale-daemon warning in that case so the consumer
+    // does not get noise on a query whose entire purpose is post-mortem
+    // inspection.
+    let suppress_stale_warning = args
+        .status
+        .as_deref()
+        .map(|s| s.eq_ignore_ascii_case("exited"))
+        .unwrap_or(false);
+    if !suppress_stale_warning {
+        match crate::config::daemon_pid::detect_daemon_state() {
+            crate::config::daemon_pid::DaemonState::Running { .. } => {}
+            crate::config::daemon_pid::DaemonState::NoPidFile => {
+                eprintln!(
+                    "[WARN] sessions.json may be stale — no AgentsCommander daemon detected \
+                     (no daemon.pid file). list-sessions reads the file directly; results may \
+                     not reflect current state."
+                );
+            }
+            crate::config::daemon_pid::DaemonState::StalePidFile { pid } => {
+                eprintln!(
+                    "[WARN] sessions.json may be stale — AgentsCommander daemon pid {} is not \
+                     running (stale daemon.pid file). list-sessions reads the file directly; \
+                     results reflect the daemon's last persisted state.",
+                    pid
+                );
+            }
+            crate::config::daemon_pid::DaemonState::MalformedPidFile => {
+                eprintln!(
+                    "[WARN] sessions.json may be stale — daemon.pid file is malformed. \
+                     list-sessions reads the file directly; results may not reflect current state."
+                );
+            }
+        }
+    }
+
     // Read sessions from the persisted file (raw, no deduplication)
     let sessions = load_sessions_raw();
 
@@ -96,7 +136,7 @@ pub fn execute(args: ListSessionsArgs) -> i32 {
 
     match serde_json::to_string_pretty(&entries) {
         Ok(json) => {
-            println!("{}", json);
+            crate::cli_println!("{}", json);
             0
         }
         Err(e) => {

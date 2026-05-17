@@ -46,14 +46,14 @@ pub fn execute(args: NewProjectArgs) -> i32 {
         }
     }
     if result.created {
-        println!("Created AC project at {}", result.path);
+        crate::cli_println!("Created AC project at {}", result.path);
     } else {
-        println!("AC project already exists at {}", result.path);
+        crate::cli_println!("AC project already exists at {}", result.path);
     }
     if result.registered {
-        println!("Registered project: {}", result.path);
+        crate::cli_println!("Registered project: {}", result.path);
     } else {
-        println!("Project already registered: {}", result.path);
+        crate::cli_println!("Project already registered: {}", result.path);
     }
     log::info!(
         "[cli] new-project: path={} created={} registered={}",

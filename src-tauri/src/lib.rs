@@ -143,6 +143,9 @@ pub fn run() {
         let _ = std::fs::write(dir.join("app-outbox-path.txt"), app_outbox.path());
     }
 
+    // Issue #231: write daemon.pid so CLI verbs can detect a dead daemon.
+    config::daemon_pid::write_pid_file();
+
     // Create WS broadcaster (shared between Tauri commands and web server)
     let broadcaster = WsBroadcaster::new();
 
@@ -907,6 +910,10 @@ pub fn run() {
 
                     log::info!("[shutdown] Triggering background task shutdown (async, not awaited)...");
                     shutdown_for_exit.trigger();
+
+                    // Issue #231: remove daemon.pid before tearing down so a
+                    // subsequent CLI invocation sees NoPidFile (not StalePidFile).
+                    crate::config::daemon_pid::remove_pid_file();
 
                     log::info!("[shutdown] Persisting session state...");
                     let mgr_clone = session_mgr_for_exit.clone();

@@ -11,12 +11,62 @@ pub mod send;
 
 use clap::{Parser, Subcommand};
 
+/// Print to stdout with BrokenPipe tolerance. If the underlying write fails
+/// SPECIFICALLY with `io::ErrorKind::BrokenPipe` (typically because the
+/// consumer closed stdout early — `head`, captured pipe in PS without
+/// `Out-String`, etc.), exit the process cleanly with code 0 instead of
+/// panicking. ANY OTHER write error (`PermissionDenied`, `StorageFull`,
+/// `WriteZero`, `Interrupted`, `Other`, etc.) panics like `println!` does
+/// today — those are real failures and a silent exit-0 would let consumers
+/// believe an empty redirect target is a successful empty result. See #230.
+///
+/// Use this in CLI verbs anywhere we currently call `println!` for primary
+/// output (JSON results, status lines, response bodies). Continue using
+/// `eprintln!` for error / log output — stderr is rarely piped and the
+/// panic surface there is acceptable for now.
+#[macro_export]
+macro_rules! cli_println {
+    () => {{
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let mut h = stdout.lock();
+        if let Err(e) = writeln!(h) {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            } else {
+                panic!("failed printing to stdout: {}", e);
+            }
+        }
+    }};
+    ($($arg:tt)*) => {{
+        use std::io::Write;
+        let stdout = std::io::stdout();
+        let mut h = stdout.lock();
+        if let Err(e) = writeln!(h, $($arg)*) {
+            if e.kind() == std::io::ErrorKind::BrokenPipe {
+                std::process::exit(0);
+            } else {
+                panic!("failed printing to stdout: {}", e);
+            }
+        }
+    }};
+}
+
 #[derive(Parser)]
 #[command(about = "Agent terminal session manager with inter-agent messaging")]
 #[command(after_help = "\
 TOKEN: In agent sessions, pass AGENTSCOMMANDER_TOKEN from the environment. \
 Credentials are not delivered through visible PTY text. \
 If token validation fails, restart or respawn the sender session; live token refresh is not supported.\n\n\
+TOKEN VALIDATION MODEL: The CLI validates token SHAPE only (root token, master token, \
+or any valid UUID). Per-session tokens are authoritative at the daemon mailbox boundary, \
+not in the CLI. A UUID issued by a different binary instance will pass the CLI's shape \
+check but will be REJECTED by the daemon's mailbox (write-path verbs like `send`, \
+`close-session`, `brief-set-title`, `brief-append-body`). Read-only verbs (`list-peers`, \
+`list-sessions`) REQUIRE a token but accept ANY UUID-shaped value at the CLI boundary — \
+the token value is not consulted for authorization at the CLI. These verbs read disk \
+state directly (from `--root` and the binary's per-binary config directory); authorization \
+of any specific UUID happens only at the daemon mailbox, which write-path verbs invoke.\n\n\
 EXIT CODES: All subcommands return 0 on success, 1 on error.\n\n\
 AGENT NAMES: Agents are identified by their path-based name (e.g., \"repos/my-project\"). \
 Use `list-peers` to discover valid agent names before sending messages.")]
@@ -95,9 +145,18 @@ pub fn attach_parent_console() {
     // No-op on non-Windows
 }
 
-/// Validate CLI token: must be provided and must be either the root_token or a valid UUID.
-/// Returns `Ok((token_string, is_root))` on success, or an error message on failure.
-/// `is_root` is true when the token matches the persisted root_token in settings.
+/// CLI-side SHAPE validation for a session token. Returns `Ok((token_string, is_root))`
+/// on success, or an error message on failure. `is_root` is true when the token matches
+/// the persisted `settings.root_token` or `master-token.txt`.
+///
+/// This is NOT an authorization check. It only ensures the token exists and is parseable
+/// as a UUID (or matches the binary's root/master token). The real per-session token check
+/// happens at the daemon mailbox boundary (`phone::mailbox::process_message`), which
+/// calls `SessionManager::find_by_token` against the live in-memory session set.
+///
+/// Consequence: any valid UUID-shaped string passes this check. A UUID issued by a
+/// different binary instance will pass here but be rejected by the daemon's mailbox.
+/// Documented in `cli::Cli`'s `after_help` under TOKEN VALIDATION MODEL. See #229.
 pub fn validate_cli_token(token: &Option<String>) -> Result<(String, bool), String> {
     let token = match token {
         Some(t) if !t.is_empty() => t.clone(),
@@ -201,5 +260,20 @@ mod tests {
         assert!(!err.contains(&legacy_phrase));
         assert!(!err.to_ascii_lowercase().contains("fallback"));
         assert!(!err.to_ascii_lowercase().contains("visible"));
+    }
+
+    #[test]
+    fn cli_after_help_documents_token_validation_model() {
+        use clap::CommandFactory;
+        let cmd = Cli::command();
+        let after = cmd
+            .get_after_help()
+            .expect("Cli after_help should be present")
+            .to_string();
+        assert!(
+            after.contains("TOKEN VALIDATION MODEL"),
+            "after_help missing TOKEN VALIDATION MODEL block: {}",
+            after
+        );
     }
 }

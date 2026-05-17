@@ -26,7 +26,8 @@ Frontmatter is never modified by this verb.\n\n\
 TEXT INPUT: --text accepts multi-line content. Newline (\\n), carriage return (\\r), \
 and tab (\\t) are permitted. NUL and other control characters are rejected.")]
 pub struct BriefAppendBodyArgs {
-    /// Session token for authentication (from AGENTSCOMMANDER_TOKEN)
+    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
     pub token: Option<String>,
 
@@ -124,7 +125,7 @@ pub fn execute(args: BriefAppendBodyArgs) -> i32 {
                 std::process::id(),
                 bp.display()
             );
-            println!("BRIEF.md body appended; backup: {}", bp.display());
+            crate::cli_println!("BRIEF.md body appended; backup: {}", bp.display());
             0
         }
         Ok(EditOutcome::Wrote { backup: None }) => {
@@ -134,13 +135,13 @@ pub fn execute(args: BriefAppendBodyArgs) -> i32 {
                 wg_root.display(),
                 std::process::id()
             );
-            println!("BRIEF.md created; no prior content to back up");
+            crate::cli_println!("BRIEF.md created; no prior content to back up");
             0
         }
         Ok(EditOutcome::NoOp) => {
             // append-body never produces NoOp (an append always changes the file).
             // Defensive: surface the same success line as a Wrote{None} would.
-            println!("BRIEF.md unchanged");
+            crate::cli_println!("BRIEF.md unchanged");
             0
         }
         Err(e) => {

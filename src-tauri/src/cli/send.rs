@@ -19,7 +19,8 @@ recipient reads the file via filesystem, bypassing PTY truncation. Sender MUST w
 invoking this command. Filename must exist in the messaging directory and match the canonical shape: \
 YYYYMMDD-HHMMSS-<wgN>-<from>-to-<wgN>-<to>-<slug>[.N].md.")]
 pub struct SendArgs {
-    /// Session token for authentication (from AGENTSCOMMANDER_TOKEN)
+    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated in the CLI;
+    /// per-session authorization happens at the daemon mailbox. See `--help` TOKEN VALIDATION MODEL.
     #[arg(long)]
     pub token: Option<String>,
 
@@ -73,6 +74,37 @@ pub(crate) fn agent_name_from_root(root: &str) -> String {
     crate::config::teams::agent_fqn_from_path(root)
 }
 
+/// If `root` lives inside `<project_dir>/.ac-new/wg-<N>-*/__agent_*/`,
+/// return `project_dir` as a UTF-8 `String`. Returns `None` if `root` is not
+/// inside a WG-replica shape OR if the resulting `project_dir` is not valid
+/// UTF-8 (parity with `list_peers::detect_wg_replica`, which also uses
+/// `to_str()?` rather than `to_string_lossy()`).
+///
+/// Mirrors the WG-replica detection in `list_peers::detect_wg_replica` so that
+/// `send` resolves WG-peer targets against the same root-walk-up source that
+/// `list-peers` uses to emit them with `reachable: true`. See #228.
+///
+/// Keep in lockstep with `list_peers::detect_wg_replica` and
+/// `phone::mailbox::derive_project_from_outbox_path`.
+fn derive_root_project_dir(root: &str) -> Option<String> {
+    let canon = std::fs::canonicalize(root).ok()?;
+    let my_dir_name = canon.file_name()?.to_str()?;
+    if !my_dir_name.starts_with("__agent_") {
+        return None;
+    }
+    let wg_dir = canon.parent()?;
+    let wg_name = wg_dir.file_name()?.to_str()?;
+    if !wg_name.starts_with("wg-") {
+        return None;
+    }
+    let ac_new_dir = wg_dir.parent()?;
+    if ac_new_dir.file_name().and_then(|n| n.to_str()) != Some(".ac-new") {
+        return None;
+    }
+    let project_dir = ac_new_dir.parent()?;
+    Some(project_dir.to_str()?.to_string())
+}
+
 pub fn execute(args: SendArgs) -> i32 {
     let root = match args.root {
         Some(ref r) => r.clone(),
@@ -114,8 +146,28 @@ pub fn execute(args: SendArgs) -> i32 {
     // canonicalizes on receive (§AR2-norm) so direct outbox writes cannot
     // bypass the reject-on-ambiguity rule.
     let settings = crate::config::settings::load_settings();
+    // Build an in-memory project-path slice that includes the project
+    // derived from --root (if any). Mirrors list-peers's WG-replica walk-up
+    // discovery so qualified WG-peer targets that list-peers reports as
+    // reachable do not fail send with `not found in any known project`.
+    // settings.json is NOT modified. See #228 / plan _plans/228-cli-daemon-laterals.md.
+    let mut effective_project_paths = settings.project_paths.clone();
+    if let Some(root_project) = derive_root_project_dir(&root) {
+        // Canonicalize once outside the dedup closure. If canonicalization of
+        // `root_project` itself fails (rare — it just resolved milliseconds
+        // ago inside `derive_root_project_dir`), fall back to string-equality
+        // rather than a broken `None == None` match.
+        let canon_root_project = std::fs::canonicalize(&root_project).ok();
+        let already_present = effective_project_paths.iter().any(|p| match &canon_root_project {
+            Some(canon_target) => std::fs::canonicalize(p).ok().as_ref() == Some(canon_target),
+            None => p == &root_project,
+        });
+        if !already_present {
+            effective_project_paths.push(root_project);
+        }
+    }
     let resolved_to =
-        match crate::config::teams::resolve_agent_target(&args.to, &settings.project_paths) {
+        match crate::config::teams::resolve_agent_target(&args.to, &effective_project_paths) {
             Ok(fqn) => fqn,
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -305,9 +357,11 @@ pub fn execute(args: SendArgs) -> i32 {
 
     loop {
         if delivered_path.exists() {
-            println!(
+            crate::cli_println!(
                 "Delivered: {} (mode={}, to={})",
-                msg_id, mode_for_ack, to_for_ack
+                msg_id,
+                mode_for_ack,
+                to_for_ack
             );
             break;
         }
@@ -335,7 +389,7 @@ pub fn execute(args: SendArgs) -> i32 {
         let poll_interval = std::time::Duration::from_secs(2);
         let resp_start = std::time::Instant::now();
 
-        println!("Waiting for response (timeout: {}s)...", args.timeout);
+        crate::cli_println!("Waiting for response (timeout: {}s)...", args.timeout);
 
         loop {
             if resp_start.elapsed() >= timeout {
@@ -349,7 +403,7 @@ pub fn execute(args: SendArgs) -> i32 {
             if response_path.exists() {
                 match std::fs::read_to_string(&response_path) {
                     Ok(content) => {
-                        println!("{}", content);
+                        crate::cli_println!("{}", content);
                         return 0;
                     }
                     Err(e) => {
@@ -364,4 +418,51 @@ pub fn execute(args: SendArgs) -> i32 {
     }
 
     0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn derive_root_project_dir_walks_up_wg_replica_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let project = temp.path().join("proj-x");
+        let agent_root = project
+            .join(".ac-new")
+            .join("wg-1-devs")
+            .join("__agent_alice");
+        std::fs::create_dir_all(&agent_root).unwrap();
+
+        // On Windows, std::fs::canonicalize returns `\\?\C:\...` extended-length
+        // paths; compute the expected via canonicalize so the assertion holds on
+        // both Windows and Unix. Mirror pattern from list_peers.rs:972-1010
+        // (`extended_length_prefix_normalizes`).
+        let expected = std::fs::canonicalize(&project)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let got = derive_root_project_dir(agent_root.to_str().unwrap())
+            .expect("should derive project from WG replica path");
+        assert_eq!(got, expected);
+    }
+
+    #[test]
+    fn derive_root_project_dir_returns_none_for_non_wg_path() {
+        let temp = tempfile::TempDir::new().unwrap();
+        // A random subdir without the WG-replica shape.
+        let random = temp.path().join("random").join("dir");
+        std::fs::create_dir_all(&random).unwrap();
+        assert!(derive_root_project_dir(random.to_str().unwrap()).is_none());
+    }
+
+    #[test]
+    fn derive_root_project_dir_returns_none_when_one_level_too_high() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let wg_dir = temp.path().join("proj-x").join(".ac-new").join("wg-1-devs");
+        std::fs::create_dir_all(&wg_dir).unwrap();
+        // Pointing at the WG dir, not the __agent_* dir → must return None.
+        assert!(derive_root_project_dir(wg_dir.to_str().unwrap()).is_none());
+    }
 }

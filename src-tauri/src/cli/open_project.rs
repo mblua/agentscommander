@@ -56,9 +56,9 @@ pub fn execute(args: OpenProjectArgs) -> i32 {
             eprintln!("Error: failed to persist settings: {}", e);
             return 1;
         }
-        println!("Registered project: {}", result.path);
+        crate::cli_println!("Registered project: {}", result.path);
     } else {
-        println!("Project already registered: {}", result.path);
+        crate::cli_println!("Project already registered: {}", result.path);
     }
     log::info!(
         "[cli] open-project: path={} registered={}",

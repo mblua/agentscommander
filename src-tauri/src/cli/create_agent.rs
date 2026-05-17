@@ -163,7 +163,7 @@ pub fn execute(args: CreateAgentArgs) -> i32 {
     };
 
     match serde_json::to_string_pretty(&result) {
-        Ok(json) => println!("{}", json),
+        Ok(json) => crate::cli_println!("{}", json),
         Err(e) => {
             eprintln!("Error: failed to serialize result: {}", e);
             return 1;
