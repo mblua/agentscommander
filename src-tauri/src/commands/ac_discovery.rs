@@ -1816,10 +1816,7 @@ fn read_brief_fields(wg_path: &std::path::Path) -> BriefFields {
     let Ok(content) = std::fs::read_to_string(&brief_path) else {
         return (None, None);
     };
-    let brief = content
-        .lines()
-        .next()
-        .map(|l| l.trim_start_matches("# ").to_string());
+    let brief = extract_brief_first_line(&content);
     let brief_title = crate::commands::entity_creation::parse_brief_title(&content);
     (brief, brief_title)
 }
