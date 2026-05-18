@@ -87,6 +87,8 @@ pub enum Commands {
     Send(send::SendArgs),
     /// List reachable peers (returns JSON array with name, status, role, teams)
     ListPeers(list_peers::ListPeersArgs),
+    /// List reachable peers (lean JSON — name, working, sessionStatus, reachable, teams)
+    ListPeersLean(list_peers::ListPeersLeanArgs),
     /// List all sessions in the running app instance (returns JSON)
     ListSessions(list_sessions::ListSessionsArgs),
     /// Create a new agent: folder + CLAUDE.md, optionally launch it
@@ -208,6 +210,7 @@ pub fn handle_cli(cmd: Commands) -> i32 {
     let code = match cmd {
         Commands::Send(args) => send::execute(args),
         Commands::ListPeers(args) => list_peers::execute(args),
+        Commands::ListPeersLean(args) => list_peers::execute_lean(args),
         Commands::ListSessions(args) => list_sessions::execute(args),
         Commands::CreateAgent(args) => create_agent::execute(args),
         Commands::CloseSession(args) => close_session::execute(args),

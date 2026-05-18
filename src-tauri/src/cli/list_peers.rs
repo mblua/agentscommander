@@ -49,6 +49,152 @@ pub struct ListPeersArgs {
     pub root: Option<String>,
 }
 
+#[derive(Args)]
+#[command(after_help = "\
+OUTPUT: JSON array of team peers, compact form for agent coordination.\n\
+Each entry contains:\n  \
+  name              Canonical FQN. Pass verbatim to `send --to`.\n  \
+  working           true iff the peer has a Running/Active session not\n                    \
+                  waiting for input. Same predicate as `list-peers`.\n  \
+  sessionStatus     One of: \"active\", \"running\", \"idle\", \"waiting\",\n                    \
+                  \"exited\", \"none\". Same domain as `list-peers`.\n  \
+  waitingForInput   true if the matched session is waiting for user input;\n                    \
+                  false when there is no matching session.\n  \
+  reachable         true if you can directly message this agent.\n  \
+  teams             List of shared team names.\n  \
+  roleSummary       Single-line role hint, ≤80 chars total (including any\n                    \
+                  trailing `…` ellipsis when truncated). Omitted if\n                    \
+                  empty. Best-effort: when a peer has no `## Role`\n                    \
+                  section in CLAUDE.md (or no `# Role:` heading in\n                    \
+                  Role.md), this field may reflect the role-document\n                    \
+                  fallback rather than an explicit role description.\n                    \
+                  Treat as a hint, not authoritative.\n\n\
+EXCLUDED VS list-peers: path, role (full), codingAgents, lastCodingAgent,\n\
+sessionId, exitCode, legacy status. Use `list-peers` if any of those are\n\
+needed.\n\n\
+PEER SET: identical to `list-peers` for the same --root. The two verbs\n\
+share a single discovery function (see issue #252).\n\n\
+NOTES:\n  \
+  - Working-state visibility is bound to the binary instance that wrote\n    \
+    sessions.json (same caveat as `list-peers`).\n  \
+  - Side effect: discovering WG peers creates `inbox/` and `outbox/`\n    \
+    subdirectories under each peer's local config dir (inherited from\n    \
+    `list-peers`). The verb is read-only w.r.t. the daemon mailbox, NOT\n    \
+    filesystem-side-effect-free.\n  \
+  - Reachable=false entries are included so callers can see the full team\n    \
+    set; filter client-side if needed.\n\
+See issue #252 for the full rationale.")]
+pub struct ListPeersLeanArgs {
+    /// Session token from AGENTSCOMMANDER_TOKEN. Shape-validated only; this verb
+    /// reads disk state and does not authorize per-token. See `--help` TOKEN VALIDATION MODEL.
+    #[arg(long)]
+    pub token: Option<String>,
+
+    /// Agent root directory (required). Your working directory — used to identify you and your teams
+    #[arg(long)]
+    pub root: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LeanPeerInfo {
+    /// Canonical FQN. Same value as `PeerInfo.name`.
+    name: String,
+    /// Same predicate as `PeerInfo.working`.
+    working: bool,
+    /// Same domain as `PeerInfo.session_status`.
+    session_status: String,
+    /// Same value as `PeerInfo.waiting_for_input`.
+    waiting_for_input: bool,
+    /// Same value as `PeerInfo.reachable`.
+    reachable: bool,
+    /// Same value as `PeerInfo.teams`.
+    teams: Vec<String>,
+    /// Short single-line summary derived from `PeerInfo.role`, ≤80 chars
+    /// total (including any trailing `…`). Omitted when empty.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    role_summary: String,
+}
+
+/// Maximum length (in Unicode chars) of `roleSummary`, **including any
+/// trailing ellipsis**. Any input longer than this limit is truncated to
+/// `ROLE_SUMMARY_MAX - 1` chars plus `…`, so the final string is always
+/// `≤ ROLE_SUMMARY_MAX` chars.
+///
+/// Chosen to be:
+///   - long enough to convey a one-line role hint;
+///   - short enough that a list of 20 peers stays under ~5 KB of JSON
+///     worst-case (multi-byte scripts like CJK), well within the 32 KB
+///     notification-line budget agents have to read.
+const ROLE_SUMMARY_MAX: usize = 80;
+
+/// Compute a single-line, length-capped summary from a full `role` string.
+///
+/// - Takes the first non-empty trimmed line.
+/// - Returns `""` for empty/whitespace-only input, the documented
+///   "no-role" sentinels, or the standard AgentsCommander CLAUDE.md
+///   preamble openings (which are uniform across replicas and carry no
+///   role-hint signal).
+/// - If the surviving line is ≤ `ROLE_SUMMARY_MAX` chars, returns it
+///   unchanged.
+/// - Otherwise returns the first `ROLE_SUMMARY_MAX - 1` chars followed by
+///   `…`, so the result is always ≤ `ROLE_SUMMARY_MAX` chars total.
+///
+/// Note: `roleSummary` is best-effort. When a peer's role document has no
+/// `## Role` section (or no `# Role:` heading for WG replicas), the field
+/// reflects the first non-heading lines that `extract_role_section` falls
+/// back to — which may not be a true role description. Treat the field as
+/// a hint, not authoritative.
+fn lean_role_summary(role: &str) -> String {
+    const NO_ROLE_SENTINELS: &[&str] = &[
+        "No role description available.",
+        "WG replica agent.",
+    ];
+    // Standard AgentsCommander preamble openings. These appear verbatim in
+    // every replica's CLAUDE.md by design, so when they surface through the
+    // `extract_role_section` fallback they carry no discriminating signal —
+    // suppress them rather than ship 20 peers with identical roleSummary.
+    const PREAMBLE_PREFIXES: &[&str] = &[
+        "You are running inside an AgentsCommander session",
+        "# AgentsCommander Context",
+    ];
+
+    let line = role
+        .lines()
+        .map(str::trim)
+        .find(|l| !l.is_empty())
+        .unwrap_or("");
+
+    if line.is_empty() || NO_ROLE_SENTINELS.contains(&line) {
+        return String::new();
+    }
+    if PREAMBLE_PREFIXES.iter().any(|p| line.starts_with(p)) {
+        return String::new();
+    }
+
+    let char_count = line.chars().count();
+    if char_count <= ROLE_SUMMARY_MAX {
+        return line.to_string();
+    }
+    // Truncate to MAX-1 chars + ellipsis → exactly MAX chars total.
+    let truncated: String = line.chars().take(ROLE_SUMMARY_MAX - 1).collect();
+    format!("{}…", truncated)
+}
+
+impl From<&PeerInfo> for LeanPeerInfo {
+    fn from(p: &PeerInfo) -> Self {
+        LeanPeerInfo {
+            name: p.name.clone(),
+            working: p.working,
+            session_status: p.session_status.clone(),
+            waiting_for_input: p.waiting_for_input,
+            reachable: p.reachable,
+            teams: p.teams.clone(),
+            role_summary: lean_role_summary(&p.role),
+        }
+    }
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PeerInfo {
@@ -502,8 +648,11 @@ fn build_wg_peer(
     }
 }
 
-/// WG-specific peer discovery — self-contained, returns exit code.
-fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
+/// Pure (filesystem-bound) discovery for WG replicas. Returns the same vector
+/// that the legacy `execute_wg_discovery` would have serialized. Shared by
+/// `execute` and `execute_lean` so the peer set is identical by construction
+/// for both verbs (see issue #252).
+fn discover_wg_peers(wg: WgReplicaInfo) -> Vec<PeerInfo> {
     let session_index = build_session_index();
     let mut peers: Vec<PeerInfo> = Vec::new();
     let discovered = crate::config::teams::discover_teams();
@@ -594,45 +743,22 @@ fn execute_wg_discovery(wg: WgReplicaInfo) -> i32 {
         }
     }
 
-    match serde_json::to_string_pretty(&peers) {
-        Ok(json) => {
-            crate::cli_println!("{}", json);
-            0
-        }
-        Err(e) => {
-            eprintln!("Error: failed to serialize peers: {}", e);
-            1
-        }
-    }
+    peers
 }
 
-pub fn execute(args: ListPeersArgs) -> i32 {
-    // Validate token before any discovery
-    if let Err(msg) = crate::cli::validate_cli_token(&args.token) {
-        eprintln!("{}", msg);
-        return 1;
-    }
-
-    let root = match args.root {
-        Some(ref r) => r.clone(),
-        None => {
-            eprintln!("Error: --root is required. Specify your agent's root directory.");
-            return 1;
-        }
-    };
-    // ── WG replica fast path ──────────────────────────────────────────
-    // If we're a WG replica, use dedicated discovery and return early.
-    if let Some(wg) = detect_wg_replica(&root) {
-        return execute_wg_discovery(wg);
-    }
-
+/// Discovery for non-WG-replica roots: standard team membership scan + a
+/// WG-replica scan across `settings.project_paths`. Returns the same vector
+/// that the legacy `execute` body would have serialized. Shared by `execute`
+/// and `execute_lean` so the peer set is identical by construction for both
+/// verbs (see issue #252).
+fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
     // ── Standard discovery-based peer listing ────────────────────────
     //
     // `execute` is the non-WG-replica path (WG replicas return early above).
     // `root` is an origin matrix agent CWD → `agent_fqn_from_path` gives the
     // origin form `project/agent` (identical to the legacy behavior for
     // non-WG paths). Using the canonical helper eliminates the shadow.
-    let my_name = crate::config::teams::agent_fqn_from_path(&root);
+    let my_name = crate::config::teams::agent_fqn_from_path(root);
     let discovered = crate::config::teams::discover_teams();
     let session_index = build_session_index();
 
@@ -815,8 +941,11 @@ pub fn execute(args: ListPeersArgs) -> i32 {
         }
     }
 
-    // Output as JSON
-    match serde_json::to_string_pretty(&peers) {
+    peers
+}
+
+fn serialize_full_peers(peers: &[PeerInfo]) -> i32 {
+    match serde_json::to_string_pretty(peers) {
         Ok(json) => {
             crate::cli_println!("{}", json);
             0
@@ -826,6 +955,66 @@ pub fn execute(args: ListPeersArgs) -> i32 {
             1
         }
     }
+}
+
+fn serialize_lean_peers(peers: &[PeerInfo]) -> i32 {
+    let lean: Vec<LeanPeerInfo> = peers.iter().map(LeanPeerInfo::from).collect();
+    match serde_json::to_string_pretty(&lean) {
+        Ok(json) => {
+            crate::cli_println!("{}", json);
+            0
+        }
+        Err(e) => {
+            eprintln!("Error: failed to serialize peers: {}", e);
+            1
+        }
+    }
+}
+
+pub fn execute(args: ListPeersArgs) -> i32 {
+    // Validate token before any discovery
+    if let Err(msg) = crate::cli::validate_cli_token(&args.token) {
+        eprintln!("{}", msg);
+        return 1;
+    }
+
+    let root = match args.root {
+        Some(ref r) => r.clone(),
+        None => {
+            eprintln!("Error: --root is required. Specify your agent's root directory.");
+            return 1;
+        }
+    };
+
+    let peers = if let Some(wg) = detect_wg_replica(&root) {
+        discover_wg_peers(wg)
+    } else {
+        discover_origin_peers(&root)
+    };
+    serialize_full_peers(&peers)
+}
+
+pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
+    // Validate token before any discovery
+    if let Err(msg) = crate::cli::validate_cli_token(&args.token) {
+        eprintln!("{}", msg);
+        return 1;
+    }
+
+    let root = match args.root {
+        Some(ref r) => r.clone(),
+        None => {
+            eprintln!("Error: --root is required. Specify your agent's root directory.");
+            return 1;
+        }
+    };
+
+    let peers = if let Some(wg) = detect_wg_replica(&root) {
+        discover_wg_peers(wg)
+    } else {
+        discover_origin_peers(&root)
+    };
+    serialize_lean_peers(&peers)
 }
 
 #[cfg(test)]
@@ -1065,5 +1254,280 @@ mod tests {
         let idx = build_session_index_from(&rows);
         let bucket = idx.get("c:/x").expect("entries grouped under c:/x");
         assert_eq!(bucket.len(), 2);
+    }
+
+    // ── §6 / §12 list-peers-lean (issue #252) ──────────────────────────────
+
+    fn sample_peer_info(name: &str) -> PeerInfo {
+        PeerInfo {
+            name: name.to_string(),
+            path: r"C:\some\path".to_string(),
+            status: "active".to_string(),
+            role: "Senior architect with deep Rust expertise. Owns the PTY layer.".to_string(),
+            teams: vec!["ac-devs".to_string()],
+            reachable: true,
+            last_coding_agent: Some("claude".to_string()),
+            working: true,
+            session_status: "running".to_string(),
+            session_id: Some("11111111-1111-1111-1111-111111111111".to_string()),
+            waiting_for_input: false,
+            exit_code: None,
+            coding_agents: HashMap::new(),
+        }
+    }
+
+    // §6.1 — command exists in clap
+
+    #[test]
+    fn list_peers_lean_subcommand_is_registered() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let names: Vec<&str> = cmd.get_subcommands().map(|c| c.get_name()).collect();
+        assert!(
+            names.iter().any(|n| *n == "list-peers-lean"),
+            "list-peers-lean should be a registered subcommand; got: {:?}",
+            names
+        );
+    }
+
+    #[test]
+    fn list_peers_lean_help_documents_excluded_fields() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let lean = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "list-peers-lean")
+            .expect("list-peers-lean subcommand");
+        let after = lean
+            .get_after_help()
+            .expect("after_help present")
+            .to_string();
+        assert!(after.contains("EXCLUDED VS list-peers"));
+        assert!(after.contains("path"));
+        assert!(after.contains("codingAgents"));
+    }
+
+    // §6.2 — JSON shape: kept and omitted fields
+
+    #[test]
+    fn lean_json_keeps_essential_fields() {
+        let peer = sample_peer_info("project:wg-1-team/dev");
+        let lean = LeanPeerInfo::from(&peer);
+        let json = serde_json::to_string(&lean).unwrap();
+        for kept in [
+            "\"name\":",
+            "\"working\":",
+            "\"sessionStatus\":",
+            "\"waitingForInput\":",
+            "\"reachable\":",
+            "\"teams\":",
+            "\"roleSummary\":",
+        ] {
+            assert!(json.contains(kept), "lean JSON missing {} — got {}", kept, json);
+        }
+    }
+
+    #[test]
+    fn lean_json_omits_verbose_fields() {
+        let peer = sample_peer_info("project:wg-1-team/dev");
+        let lean = LeanPeerInfo::from(&peer);
+        let json = serde_json::to_string(&lean).unwrap();
+        for forbidden in [
+            "\"path\":",
+            "\"role\":",
+            "\"codingAgents\":",
+            "\"lastCodingAgent\":",
+            "\"sessionId\":",
+            "\"exitCode\":",
+            "\"status\":",
+        ] {
+            assert!(
+                !json.contains(forbidden),
+                "lean JSON must not contain {} — got {}",
+                forbidden,
+                json
+            );
+        }
+    }
+
+    #[test]
+    fn lean_output_is_valid_json_array() {
+        let peers: Vec<PeerInfo> = vec![sample_peer_info("a"), sample_peer_info("b")];
+        let lean: Vec<LeanPeerInfo> = peers.iter().map(LeanPeerInfo::from).collect();
+        let json = serde_json::to_string_pretty(&lean).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("valid JSON");
+        assert!(parsed.is_array(), "lean output must be a JSON array");
+        assert_eq!(parsed.as_array().unwrap().len(), 2);
+    }
+
+    // §6.3 — field preservation parity
+
+    #[test]
+    fn lean_preserves_name_working_session_status_reachable() {
+        let peer = sample_peer_info("project:wg-1-team/dev");
+        let lean = LeanPeerInfo::from(&peer);
+        assert_eq!(lean.name, peer.name);
+        assert_eq!(lean.working, peer.working);
+        assert_eq!(lean.session_status, peer.session_status);
+        assert_eq!(lean.reachable, peer.reachable);
+        assert_eq!(lean.waiting_for_input, peer.waiting_for_input);
+        assert_eq!(lean.teams, peer.teams);
+    }
+
+    #[test]
+    fn lean_waiting_for_input_false_when_no_session() {
+        let mut peer = sample_peer_info("p");
+        peer.session_status = "none".to_string();
+        peer.waiting_for_input = false;
+        let lean = LeanPeerInfo::from(&peer);
+        assert!(!lean.waiting_for_input);
+        assert_eq!(lean.session_status, "none");
+    }
+
+    // §12.2 — From<&PeerInfo> binds to lean_role_summary helper
+
+    #[test]
+    fn lean_role_summary_is_produced_by_lean_role_summary_helper() {
+        let mut peer = sample_peer_info("p");
+        peer.role = "x".repeat(200); // long enough to force truncation
+        let lean = LeanPeerInfo::from(&peer);
+        assert_eq!(lean.role_summary, lean_role_summary(&peer.role));
+        // Per §12.1 (Option A): ≤ MAX after truncation.
+        assert!(lean.role_summary.chars().count() <= ROLE_SUMMARY_MAX);
+        assert!(lean.role_summary.ends_with('…'));
+    }
+
+    // §6.4 — peer-set parity via projection
+
+    #[test]
+    fn lean_projection_preserves_peer_set_order_and_names() {
+        let peers: Vec<PeerInfo> = vec![
+            sample_peer_info("project/origin-agent"),
+            sample_peer_info("project:wg-1-team/dev"),
+            sample_peer_info("project:wg-1-team/architect"),
+        ];
+
+        let lean_names: Vec<String> =
+            peers.iter().map(LeanPeerInfo::from).map(|l| l.name).collect();
+        let full_names: Vec<String> = peers.iter().map(|p| p.name.clone()).collect();
+
+        assert_eq!(lean_names, full_names);
+    }
+
+    // §6.5 — roleSummary derivation (§12.1 contract: ≤ MAX total chars)
+
+    #[test]
+    fn role_summary_takes_first_non_empty_line() {
+        assert_eq!(
+            lean_role_summary("First line.\nSecond line."),
+            "First line."
+        );
+        assert_eq!(
+            lean_role_summary("\n\nFirst non-empty.\nSecond."),
+            "First non-empty."
+        );
+    }
+
+    #[test]
+    fn role_summary_truncates_to_at_most_max_chars_with_ellipsis() {
+        let long = "x".repeat(200);
+        let out = lean_role_summary(&long);
+        // ≤ MAX chars total, with `…` as the final char.
+        assert_eq!(out.chars().count(), ROLE_SUMMARY_MAX);
+        assert!(out.ends_with('…'));
+        let prefix: String = out.chars().take(ROLE_SUMMARY_MAX - 1).collect();
+        assert_eq!(prefix, "x".repeat(ROLE_SUMMARY_MAX - 1));
+    }
+
+    #[test]
+    fn role_summary_returns_empty_for_no_role_sentinels() {
+        assert_eq!(lean_role_summary(""), "");
+        assert_eq!(lean_role_summary("   \n  \n"), "");
+        assert_eq!(lean_role_summary("No role description available."), "");
+        assert_eq!(lean_role_summary("WG replica agent."), "");
+    }
+
+    #[test]
+    fn role_summary_is_omitted_from_json_when_empty() {
+        let mut peer = sample_peer_info("p");
+        peer.role = "No role description available.".to_string();
+        let lean = LeanPeerInfo::from(&peer);
+        let json = serde_json::to_string(&lean).unwrap();
+        assert!(
+            !json.contains("\"roleSummary\":"),
+            "roleSummary must be omitted when empty — got {}",
+            json
+        );
+    }
+
+    // §12.7 — preamble sentinel filtering
+
+    #[test]
+    fn role_summary_filters_agentscommander_preamble() {
+        let preamble = "You are running inside an AgentsCommander session — \
+                        a terminal session manager that coordinates multiple AI agents.";
+        assert_eq!(lean_role_summary(preamble), "");
+
+        let context_header = "# AgentsCommander Context\n\nYou are running inside…";
+        assert_eq!(lean_role_summary(context_header), "");
+    }
+
+    // §12.8 — fence-post truncation tests
+
+    #[test]
+    fn role_summary_no_ellipsis_at_exact_limit() {
+        let exactly = "x".repeat(ROLE_SUMMARY_MAX);
+        let out = lean_role_summary(&exactly);
+        assert_eq!(out.chars().count(), ROLE_SUMMARY_MAX);
+        assert!(!out.ends_with('…'));
+    }
+
+    #[test]
+    fn role_summary_ellipsis_at_one_over_limit() {
+        let one_over = "x".repeat(ROLE_SUMMARY_MAX + 1);
+        let out = lean_role_summary(&one_over);
+        // Per §12.1 (Option A): always ≤ MAX total, with ellipsis if truncated.
+        assert_eq!(out.chars().count(), ROLE_SUMMARY_MAX);
+        assert!(out.ends_with('…'));
+        let prefix: String = out.chars().take(ROLE_SUMMARY_MAX - 1).collect();
+        assert_eq!(prefix, "x".repeat(ROLE_SUMMARY_MAX - 1));
+    }
+
+    // §6.6 — validation guards (token/root) for both execute and execute_lean
+
+    #[test]
+    fn execute_returns_1_when_token_missing() {
+        let args = ListPeersArgs {
+            token: None,
+            root: Some("anything".into()),
+        };
+        assert_eq!(execute(args), 1);
+    }
+
+    #[test]
+    fn execute_returns_1_when_root_missing() {
+        let args = ListPeersArgs {
+            token: Some("11111111-1111-1111-1111-111111111111".into()),
+            root: None,
+        };
+        assert_eq!(execute(args), 1);
+    }
+
+    #[test]
+    fn execute_lean_returns_1_when_token_missing() {
+        let args = ListPeersLeanArgs {
+            token: None,
+            root: Some("anything".into()),
+        };
+        assert_eq!(execute_lean(args), 1);
+    }
+
+    #[test]
+    fn execute_lean_returns_1_when_root_missing() {
+        let args = ListPeersLeanArgs {
+            token: Some("11111111-1111-1111-1111-111111111111".into()),
+            root: None,
+        };
+        assert_eq!(execute_lean(args), 1);
     }
 }
