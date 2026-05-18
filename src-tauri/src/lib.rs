@@ -103,6 +103,37 @@ impl AppOutbox {
     }
 }
 
+/// Decide whether a persisted session should be restored with a live PTY
+/// at app startup, or deferred (created as a dormant `Exited(0)` record).
+///
+/// Inputs:
+///   - `setting_on`: value of `AppSettings::restore_coordinator_wake_state`.
+///   - `is_coord`: whether the agent FQN derived from `ps.working_directory`
+///     is a coordinator of any discovered team.
+///   - `persisted_status`: `PersistedSession::status` as snapshotted at the
+///     last app shutdown. `None` means the snapshot was taken by an older
+///     binary that did not record status. Treat `None` as **awake** for
+///     forward-compat — better to wake a coord the user expected to be
+///     awake than silently leave it dormant on first launch after upgrade.
+///
+/// Returns true ⇒ restore with PTY; false ⇒ defer (dormant).
+pub(crate) fn should_wake_on_restore(
+    setting_on: bool,
+    is_coord: bool,
+    persisted_status: Option<&crate::session::session::SessionStatus>,
+) -> bool {
+    if !setting_on {
+        return false; // Setting OFF: defer everything.
+    }
+    if !is_coord {
+        return false; // Non-coord: always deferred under the new policy.
+    }
+    match persisted_status {
+        Some(crate::session::session::SessionStatus::Exited(_)) => false, // asleep at shutdown
+        Some(_) | None => true, // awake at shutdown (or unknown → fail-open)
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // Same backend the CLI path now installs in `main.rs` — see `logging.rs`
@@ -620,13 +651,22 @@ pub fn run() {
                 let pty_mgr_clone = app.state::<Arc<Mutex<PtyManager>>>().inner().clone();
                 let app_handle = app.handle().clone();
 
-                // Check if we should only auto-start coordinator sessions
-                let start_only_coords = crate::config::settings::load_settings().start_only_coordinators;
-                let teams = if start_only_coords {
-                    crate::config::teams::discover_teams()
-                } else {
-                    vec![]
-                };
+                // #248 — read the new setting and always discover teams (the coord check
+                // is run for every persisted session, regardless of the setting's value).
+                let settings_snapshot = crate::config::settings::load_settings();
+                let setting_on = settings_snapshot.restore_coordinator_wake_state;
+                let teams = crate::config::teams::discover_teams();
+
+                // #248 Grinch Z10 — diagnostic: empty `teams` after a project-path rename
+                // is a real failure mode; without this line the user sees coords stay
+                // dormant with no log clue. Emits exactly once per launch.
+                log::info!(
+                    "[restore] {} teams discovered across {} project paths; setting_on={}; evaluating {} persisted sessions",
+                    teams.len(),
+                    settings_snapshot.project_paths.len(),
+                    setting_on,
+                    persisted.len()
+                );
 
                 // §224 A.2.5 — RAII guard inside the closure clears the flag
                 // on normal exit AND on panic unwind so the daemon can't get
@@ -654,6 +694,10 @@ pub fn run() {
                     let mut active_id = None;
                     let mut failed_recoverable: Vec<sessions_persistence::PersistedSession> = Vec::new();
 
+                    // #248 Grinch Z5 — count outcomes for the end-of-restore summary line.
+                    let mut n_woken: usize = 0;
+                    let mut n_deferred: usize = 0;
+
                     for ps in &persisted {
                         // Skip sessions whose CWD no longer exists (permanent failure)
                         if !std::path::Path::new(&ps.working_directory).exists() {
@@ -661,50 +705,77 @@ pub fn run() {
                             continue;
                         }
 
-                        // Defer non-coordinator team members when setting is enabled.
+                        // #248 — decide wake vs defer for this session.
                         // §DR2: use `agent_fqn_from_path` so WG replicas get project-precise
                         // team membership and coordinator checks. Strict `is_coordinator`
                         // (§AR2-strict) requires the FQN to avoid cross-project flag leaks.
-                        if start_only_coords {
-                            let agent_name = crate::config::teams::agent_fqn_from_path(&ps.working_directory);
-                            let in_team = teams.iter().any(|t| crate::config::teams::is_in_team(&agent_name, t));
-                            let is_coord = crate::config::teams::is_any_coordinator(&agent_name, &teams);
+                        let agent_name = crate::config::teams::agent_fqn_from_path(&ps.working_directory);
+                        let is_coord = crate::config::teams::is_any_coordinator(&agent_name, &teams);
+                        let wake = should_wake_on_restore(setting_on, is_coord, ps.status.as_ref());
 
-                            if in_team && !is_coord {
-                                // Create session record without PTY (dormant)
-                                let mgr = session_mgr_clone.read().await;
-                                match mgr.create_session(
-                                    ps.shell.clone(),
-                                    ps.shell_args.clone(),
-                                    ps.working_directory.clone(),
-                                    ps.agent_id.clone(),
-                                    ps.agent_label.clone(),
-                                    ps.git_repos.clone(),
-                                    false, // deferred = in_team && !is_coord, so never coordinator
-                                ).await {
-                                    Ok(session) => {
-                                        mgr.rename_session(session.id, ps.name.clone()).await.ok();
-                                        mgr.mark_exited(session.id, 0).await;
-                                        mgr.clear_active_if(session.id).await;
-                                        // Read updated session so emitted event reflects Exited status
-                                        if let Some(updated) = mgr.get_session(session.id).await {
-                                            let info = crate::session::session::SessionInfo::from(&updated);
-                                            let _ = tauri::Emitter::emit(&app_handle, "session_created", info);
-                                        }
-                                        log::info!(
-                                            "Deferred non-coordinator session '{}' (agent: {}, no PTY)",
-                                            ps.name, agent_name
-                                        );
+                        if !wake {
+                            // Defer: create a dormant Session record (no PTY, status = Exited(0)).
+                            let mgr = session_mgr_clone.read().await;
+                            match mgr.create_session(
+                                ps.shell.clone(),
+                                ps.shell_args.clone(),
+                                ps.working_directory.clone(),
+                                ps.agent_id.clone(),
+                                ps.agent_label.clone(),
+                                ps.git_repos.clone(),
+                                is_coord, // #248 — pass live is_coord so dormant coords stay coords (Z7).
+                            ).await {
+                                Ok(session) => {
+                                    mgr.rename_session(session.id, ps.name.clone()).await.ok();
+
+                                    // Grinch Z2 — preserve detach state across the defer lifecycle.
+                                    // Must be applied BEFORE mark_exited so the next snapshot_sessions
+                                    // event (whether triggered by failed_recoverable, user action, or
+                                    // shutdown) writes was_detached=true to disk. Without this, the
+                                    // first persist after defer silently drops the user's detach intent
+                                    // (manager.rs defaults was_detached to false on create_session).
+                                    if ps.was_detached {
+                                        mgr.set_was_detached(session.id, true).await;
                                     }
-                                    Err(e) => {
-                                        log::error!("Failed to create deferred session '{}': {}", ps.name, e);
-                                        failed_recoverable.push(ps.clone());
+                                    if let Some(ref geo) = ps.detached_geometry {
+                                        mgr.set_detached_geometry(session.id, geo.clone()).await;
+                                    }
+
+                                    mgr.mark_exited(session.id, 0).await;
+                                    mgr.clear_active_if(session.id).await;
+                                    // Read updated session so emitted event reflects Exited status
+                                    if let Some(updated) = mgr.get_session(session.id).await {
+                                        let info = crate::session::session::SessionInfo::from(&updated);
+                                        let _ = tauri::Emitter::emit(&app_handle, "session_created", info);
+                                    }
+                                    // Grinch Z5 — debug, not info: under the new default every
+                                    // persisted session lands here, and an info-level line per
+                                    // session creates a "mass defer" wall in startup logs that
+                                    // looks like an alarm. The end-of-loop info summary below
+                                    // carries the load-bearing signal.
+                                    log::debug!(
+                                        "Deferred session '{}' on startup (agent: {}, is_coord: {}, setting: {}, persisted_status: {:?}, was_detached: {})",
+                                        ps.name, agent_name, is_coord, setting_on, ps.status, ps.was_detached
+                                    );
+                                    n_deferred += 1;
+                                    // Preserve `was_active` for the post-loop active-switch:
+                                    // a deferred session can still be the persisted-active one.
+                                    // The post-loop branching (Fix A) ensures `set_active_only`
+                                    // is used (not `switch_session`), so the dormant status
+                                    // survives selection.
+                                    if ps.was_active {
+                                        active_id = Some(session.id.to_string());
                                     }
                                 }
-                                continue; // Skip normal restore with PTY
+                                Err(e) => {
+                                    log::error!("Failed to create deferred session '{}': {}", ps.name, e);
+                                    failed_recoverable.push(ps.clone());
+                                }
                             }
+                            continue;
                         }
 
+                        // Wake: full PTY restore via the existing create_session_inner call.
                         match commands::session::create_session_inner(
                             &app_handle,
                             &session_mgr_clone,
@@ -723,6 +794,7 @@ pub fn run() {
                                 if ps.was_active {
                                     active_id = Some(info.id.clone());
                                 }
+                                n_woken += 1;
 
                                 // Phase 3 restore: reconstruct detach state for the live session.
                                 // Deferred sessions (handled above with a `continue`) never reach
@@ -780,6 +852,15 @@ pub fn run() {
                         }
                     }
 
+                    // #248 Grinch Z5 — load-bearing summary line. Replaces the per-session
+                    // info noise demoted to debug above. Must be emitted BEFORE the post-loop
+                    // active-switch block so the restore-decision summary is grouped with
+                    // the restore log in chronological order, not interleaved with switch events.
+                    log::info!(
+                        "[restore] complete — {} woken, {} deferred (setting_on={}, total_evaluated={})",
+                        n_woken, n_deferred, setting_on, persisted.len()
+                    );
+
                     // Switch to the session that was active when the app closed. Plan §A2.2.G3
                     // filter: if the persisted-active session is now detached (respawned with
                     // `was_detached=true` above), do NOT switch main to it — main + detached
@@ -821,7 +902,33 @@ pub fn run() {
                                     );
                                 }
                             } else {
-                                let _ = mgr.switch_session(uuid).await;
+                                // #248 Fix A — preserve dormant status for the persisted-active
+                                // session. Read the candidate's current status from the live
+                                // manager (it was just set by either the defer arm or
+                                // create_session_inner upstream).
+                                let candidate_status =
+                                    mgr.get_session(uuid).await.map(|s| s.status.clone());
+                                let dormant = matches!(
+                                    candidate_status,
+                                    Some(crate::session::session::SessionStatus::Exited(_))
+                                );
+
+                                let result = if dormant {
+                                    mgr.set_active_only(uuid).await
+                                } else {
+                                    mgr.switch_session(uuid).await
+                                };
+                                if let Err(e) = result {
+                                    log::error!(
+                                        "Failed to select persisted-active session {} (dormant={}): {}",
+                                        id, dormant, e
+                                    );
+                                }
+
+                                // `session_switched` payload is unchanged — sidebar uses it for
+                                // the selection highlight; dot color is driven by `status` from
+                                // the next `list_sessions` refresh (which now correctly returns
+                                // `Exited(0)` for the dormant case thanks to set_active_only).
                                 let _ = tauri::Emitter::emit(
                                     &app_handle,
                                     "session_switched",
@@ -843,7 +950,6 @@ pub fn run() {
                             failed_recoverable.iter().map(|s| &s.name).collect::<Vec<_>>()
                         );
                     }
-                    log::info!("Session restore complete");
                 });
             }
 
@@ -999,4 +1105,39 @@ pub fn run() {
                 _ => {}
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_wake_on_restore;
+    use crate::session::session::SessionStatus;
+
+    #[test]
+    fn setting_off_always_defers() {
+        assert!(!should_wake_on_restore(false, true, Some(&SessionStatus::Running)));
+        assert!(!should_wake_on_restore(false, false, None));
+    }
+
+    #[test]
+    fn non_coord_always_defers_when_on() {
+        assert!(!should_wake_on_restore(true, false, Some(&SessionStatus::Running)));
+    }
+
+    #[test]
+    fn coord_awake_at_shutdown_wakes_when_on() {
+        assert!(should_wake_on_restore(true, true, Some(&SessionStatus::Running)));
+        assert!(should_wake_on_restore(true, true, Some(&SessionStatus::Idle)));
+        assert!(should_wake_on_restore(true, true, Some(&SessionStatus::Active)));
+    }
+
+    #[test]
+    fn coord_asleep_at_shutdown_defers_when_on() {
+        assert!(!should_wake_on_restore(true, true, Some(&SessionStatus::Exited(0))));
+        assert!(!should_wake_on_restore(true, true, Some(&SessionStatus::Exited(137))));
+    }
+
+    #[test]
+    fn coord_unknown_status_fails_open_when_on() {
+        assert!(should_wake_on_restore(true, true, None));
+    }
 }

@@ -336,12 +336,12 @@ const SettingsModal: Component<{ onClose: () => void; section?: string }> = (pro
           <input
             type="checkbox"
             class="settings-checkbox"
-            checked={settings.data!.startOnlyCoordinators}
+            checked={settings.data!.restoreCoordinatorWakeState}
             onChange={(e) =>
-              updateField("startOnlyCoordinators", e.currentTarget.checked)
+              updateField("restoreCoordinatorWakeState", e.currentTarget.checked)
             }
           />
-          <span>On start only start Coordinators</span>
+          <span>On start, wake coordinators that were awake when the app closed</span>
         </label>
         <label class="settings-checkbox-field">
           <input

@@ -101,10 +101,12 @@ const ProjectPanel: Component = () => {
     const existing = replicaSession(wg, replica);
     if (existing) {
       if (!isSessionLive(existing)) {
-        // Session exists but PTY has exited (deferred at startup by
-        // startOnlyCoordinators, or prior shutdown). Wake it with provider
-        // auto-resume so the prior conversation continues — this is NOT a
-        // user-intent "fresh conversation" restart.
+        // Session exists but PTY has exited. Possible causes:
+        //  - deferred at startup by the #248 policy (non-coord, or coord that was
+        //    asleep at shutdown, or `restoreCoordinatorWakeState=false`)
+        //  - user closed it during the prior run
+        // Wake it with provider auto-resume so the prior conversation continues —
+        // this is NOT a user-intent "fresh conversation" restart.
         try {
           await SessionAPI.restart(existing.id, { skipAutoResume: false });
           if (isTauri) {

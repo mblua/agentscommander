@@ -1234,11 +1234,25 @@ fn effective_restart_skip_auto_resume(requested: Option<bool>) -> bool {
 
 /// Restart a session: destroy the existing one and recreate it with the same
 /// configuration but a fresh PTY. By default suppresses provider auto-resume
-/// (true user-intent restart — fresh conversation). Callers that are instead
-/// *waking* a previously-deferred session (e.g. a non-coordinator replica whose
-/// PTY was Exited(0) at startup due to `startOnlyCoordinators: true`) pass
-/// `skip_auto_resume = Some(false)` to allow `claude --continue`,
-/// `codex resume --last`, or `gemini --resume latest` injection.
+/// (true user-intent restart — fresh conversation).
+///
+/// Callers that are instead *waking* a previously-deferred session pass
+/// `skip_auto_resume = Some(false)`. A session is "deferred" (PTY `Exited(0)`
+/// at startup) for any of the following reasons:
+///
+///   1. `restoreCoordinatorWakeState = false` (the new-policy default per
+///      issue #248) defers every persisted session regardless of agent type.
+///   2. `restoreCoordinatorWakeState = true` defers all non-coordinator team
+///      members (these are never auto-woken on startup under the new policy).
+///   3. `restoreCoordinatorWakeState = true` defers coordinators whose PTY
+///      status was `Exited(_)` at the prior shutdown (the state-sensitive
+///      branch added by issue #248).
+///   4. The user explicitly closed the session during the prior run.
+///
+/// In all four cases, `skip_auto_resume = Some(false)` allows the next PTY
+/// spawn to inject `claude --continue`, `codex resume --last`, or
+/// `gemini --resume latest` so the prior conversation continues.
+///
 /// The restarted session is automatically activated, Telegram bridges are
 /// re-attached, and state is persisted.
 // Tauri command: State<> injections push us over clippy's 7-arg threshold.

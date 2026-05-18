@@ -47,10 +47,24 @@ pub struct AppSettings {
     /// Configured Telegram bots for bridge
     #[serde(default)]
     pub telegram_bots: Vec<TelegramBotConfig>,
-    /// On app start, only auto-start PTY sessions for coordinator agents.
-    /// Non-coordinator team members appear in sidebar but are not auto-started.
-    #[serde(default = "default_true")]
-    pub start_only_coordinators: bool,
+    /// When true, on app start, wake coordinators whose PTY was awake at shutdown.
+    /// Coordinators that were asleep at shutdown remain asleep. Non-coordinator
+    /// team members are never auto-woken on startup (the user must click their
+    /// replica in the sidebar to wake them). Issue #248.
+    #[serde(default)]
+    pub restore_coordinator_wake_state: bool,
+    /// Migration carrier: legacy field name from before issue #248. Read on
+    /// deserialization, then translated into `restore_coordinator_wake_state` by
+    /// `apply_issue_248_migration`. `skip_serializing_if = "Option::is_none"`
+    /// elides it on the next save once the migration has run.
+    ///
+    /// One-shot migration semantics:
+    ///   - legacy `startOnlyCoordinators: true`  → `restoreCoordinatorWakeState: true`
+    ///   - legacy `startOnlyCoordinators: false` → `restoreCoordinatorWakeState: false`
+    ///
+    /// In both cases the legacy value is dropped from disk on next save.
+    #[serde(default, skip_serializing_if = "Option::is_none", rename = "startOnlyCoordinators")]
+    pub legacy_start_only_coordinators: Option<bool>,
     /// Keep sidebar window always on top
     #[serde(default)]
     pub sidebar_always_on_top: bool,
@@ -216,7 +230,8 @@ impl Default for AppSettings {
             default_shell_args,
             agents: vec![],
             telegram_bots: vec![],
-            start_only_coordinators: true,
+            restore_coordinator_wake_state: false,
+            legacy_start_only_coordinators: None,
             sidebar_always_on_top: false,
             team_idle_beep_enabled: true,
             sounds_enabled: true,
@@ -431,12 +446,27 @@ pub fn load_settings() -> AppSettings {
         );
     }
 
-    // Auto-generate root token if missing
+    // #248 migration — translates legacy startOnlyCoordinators (if present).
+    // Track whether the legacy field was on disk so we can fire a single save
+    // at the end of the function (Grinch Z3 — without this, upgrade users
+    // with an existing root_token never persist the migration and the legacy
+    // key lingers in settings.json, spamming the migration log on every launch).
+    let issue_248_migrated = settings.legacy_start_only_coordinators.is_some();
+    apply_issue_248_migration(&mut settings);
+
+    // Auto-generate root token if missing.
+    let mut needs_save = issue_248_migrated;
     if settings.root_token.is_none() {
         settings.root_token = Some(uuid::Uuid::new_v4().to_string());
         log::info!("Generated new root token");
+        needs_save = true;
+    }
+    if needs_save {
         if let Err(e) = save_settings(&settings) {
-            log::error!("Failed to persist auto-generated root token: {}", e);
+            log::error!(
+                "Failed to persist settings (root_token gen and/or #248 migration): {}",
+                e
+            );
         }
     }
 
@@ -507,8 +537,47 @@ pub fn load_settings_for_cli() -> AppSettings {
         settings.main_always_on_top = true;
     }
 
+    // #248 migration — translate in-memory only. The CLI loader is forbidden
+    // from writing settings.json per the §463 contract (load_settings_for_cli
+    // is the read-only variant used by mutating verbs like `open-project` and
+    // `new-project`; it must not race with the GUI's settings writes). The
+    // next GUI launch finalizes the migration to disk via load_settings.
+    apply_issue_248_migration(&mut settings);
+
     // NO root_token auto-gen, NO save_settings call.
     settings
+}
+
+/// One-shot migration for issue #248: translate the legacy
+/// `startOnlyCoordinators` field into the new state-sensitive
+/// `restore_coordinator_wake_state`. Idempotent — once the legacy carrier is
+/// cleared (`.take()`), subsequent calls see `None` and do nothing.
+///
+/// Translation rules:
+///   - legacy `true`  → new `true`  (preserve "smart startup" intent under new semantics).
+///   - legacy `false` → new `false` (legacy "wake everything" mode is removed; closest
+///     equivalent under the new model is "wake nothing").
+///
+/// Conflict handling (Grinch Z4): if the user (or a third-party tool) wrote
+/// BOTH keys and the new field already differs from the legacy intent, emit a
+/// `warn!` and keep the new field's existing value — never silently overwrite
+/// a deliberate `restoreCoordinatorWakeState` with a stale legacy value.
+fn apply_issue_248_migration(settings: &mut AppSettings) {
+    if let Some(legacy) = settings.legacy_start_only_coordinators.take() {
+        if !settings.restore_coordinator_wake_state {
+            settings.restore_coordinator_wake_state = legacy;
+            log::info!(
+                "[settings-migration] #248 — translated legacy startOnlyCoordinators={} → restoreCoordinatorWakeState={}",
+                legacy, settings.restore_coordinator_wake_state
+            );
+        } else if legacy != settings.restore_coordinator_wake_state {
+            log::warn!(
+                "[settings-migration] #248 — conflicting state on disk: legacy startOnlyCoordinators={} but restoreCoordinatorWakeState={} already set; keeping the new value, dropping legacy",
+                legacy, settings.restore_coordinator_wake_state
+            );
+        }
+        // else: legacy and new agree → silent drop, no log.
+    }
 }
 
 /// Read only the `logLevel` field from `settings.json` without triggering migrations,
@@ -947,6 +1016,90 @@ mod tests {
         assert!(json.contains("\"rtkPromptDismissed\":true"));
         let back: AppSettings = serde_json::from_str(&json).expect("deserialize");
         assert!(back.rtk_prompt_dismissed);
+    }
+
+    // ── Issue #248 — legacy startOnlyCoordinators → restoreCoordinatorWakeState ──
+    //
+    // The minimal JSON below carries the three fields without serde defaults
+    // (`defaultShell`, `defaultShellArgs`, `agents`) plus whichever issue-#248
+    // field is under test. All other AppSettings fields use their serde defaults.
+
+    #[test]
+    fn issue_248_migration_legacy_true_translates_to_new_true() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "startOnlyCoordinators": true
+        }"#;
+        let mut s: AppSettings = serde_json::from_str(json).expect("deserialize");
+        // Pre-migration: legacy field is parsed, new field is at its default.
+        assert_eq!(s.legacy_start_only_coordinators, Some(true));
+        assert!(!s.restore_coordinator_wake_state);
+
+        super::apply_issue_248_migration(&mut s);
+
+        assert!(s.restore_coordinator_wake_state);
+        assert!(s.legacy_start_only_coordinators.is_none());
+
+        // Round-trip — the legacy field must NOT reappear on next save.
+        let out = serde_json::to_string(&s).expect("serialize");
+        assert!(!out.contains("startOnlyCoordinators"));
+        assert!(out.contains("\"restoreCoordinatorWakeState\":true"));
+    }
+
+    #[test]
+    fn issue_248_migration_legacy_false_translates_to_new_false() {
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "startOnlyCoordinators": false
+        }"#;
+        let mut s: AppSettings = serde_json::from_str(json).expect("deserialize");
+        super::apply_issue_248_migration(&mut s);
+        assert!(!s.restore_coordinator_wake_state);
+        assert!(s.legacy_start_only_coordinators.is_none());
+    }
+
+    #[test]
+    fn issue_248_no_legacy_field_keeps_new_field_value() {
+        // Fresh install or post-migrated settings.json — no legacy field.
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "restoreCoordinatorWakeState": true
+        }"#;
+        let mut s: AppSettings = serde_json::from_str(json).expect("deserialize");
+        super::apply_issue_248_migration(&mut s);
+        assert!(s.restore_coordinator_wake_state); // untouched
+        assert!(s.legacy_start_only_coordinators.is_none());
+    }
+
+    #[test]
+    fn issue_248_migration_conflict_keeps_new_value_and_drops_legacy() {
+        // Grinch Z4 — both keys present, conflicting values. The user (or a
+        // third-party tool) wrote restoreCoordinatorWakeState=true AFTER an
+        // older startOnlyCoordinators=false was already on disk. The new value
+        // wins; the legacy key is silently dropped from the next save. The
+        // helper emits a `warn!` log line for triage — not asserted here (log
+        // capture is not wired in the existing test suite), just exercised.
+        let json = r#"{
+            "defaultShell": "bash",
+            "defaultShellArgs": [],
+            "agents": [],
+            "startOnlyCoordinators": false,
+            "restoreCoordinatorWakeState": true
+        }"#;
+        let mut s: AppSettings = serde_json::from_str(json).expect("deserialize");
+        assert_eq!(s.legacy_start_only_coordinators, Some(false));
+        assert!(s.restore_coordinator_wake_state);
+
+        super::apply_issue_248_migration(&mut s);
+
+        assert!(s.restore_coordinator_wake_state); // preserved
+        assert!(s.legacy_start_only_coordinators.is_none()); // dropped
     }
 
     #[test]

@@ -152,6 +152,52 @@ impl SessionManager {
         Ok(())
     }
 
+    /// Set the active session WITHOUT mutating its status. Use when the target
+    /// session is dormant (`Exited(_)`) and we want it "selected but not running"
+    /// — e.g. the persisted-active session was deferred at startup under the
+    /// issue #248 policy. The previously-active session (if any) is demoted
+    /// Active → Running per the standard `switch_session` semantics. The newly-
+    /// active session's status is left untouched.
+    ///
+    /// Use `switch_session` for the live-selection case (status flips to
+    /// `Active`); use `set_active_only` for the dormant-selection case (status
+    /// preserved).
+    pub async fn set_active_only(&self, id: Uuid) -> Result<(), AppError> {
+        let mut sessions = self.sessions.write().await;
+        if !sessions.contains_key(&id) {
+            return Err(AppError::SessionNotFound(id.to_string()));
+        }
+
+        let mut active = self.active_session.write().await;
+
+        // Deactivate the current session — same demotion logic as switch_session.
+        if let Some(old_id) = *active {
+            if let Some(old) = sessions.get_mut(&old_id) {
+                if old.status == SessionStatus::Active {
+                    log::info!(
+                        "[session-state] {} '{}': Active → Running (deactivated for set_active_only)",
+                        &old_id.to_string()[..8],
+                        old.name
+                    );
+                    old.status = SessionStatus::Running;
+                }
+            }
+        }
+
+        // Set active WITHOUT touching the new candidate's status.
+        *active = Some(id);
+        if let Some(s) = sessions.get_mut(&id) {
+            log::info!(
+                "[session-state] {} '{}': {:?} (status preserved) → selected via set_active_only",
+                &id.to_string()[..8],
+                s.name,
+                s.status
+            );
+        }
+
+        Ok(())
+    }
+
     pub async fn rename_session(&self, id: Uuid, name: String) -> Result<(), AppError> {
         let mut sessions = self.sessions.write().await;
         let session = sessions
@@ -580,5 +626,118 @@ mod tests {
         let second_stored = mgr.get_session(second.id).await.unwrap();
         assert_eq!(first_stored.status, SessionStatus::Running);
         assert_eq!(second_stored.status, SessionStatus::Active);
+    }
+
+    // ── Issue #248 — set_active_only (Fix A) ──
+
+    #[tokio::test]
+    async fn set_active_only_preserves_dormant_status() {
+        let mgr = SessionManager::new();
+        let session = mgr
+            .create_session(
+                "claude".into(),
+                vec![],
+                "C:\\proj".into(),
+                None,
+                None,
+                vec![],
+                true,
+            )
+            .await
+            .unwrap();
+        // After create_session, the session is auto-activated (status = Active);
+        // call mark_exited to put it in the dormant state under test.
+        mgr.mark_exited(session.id, 0).await;
+        // clear_active_if to drop the now-stale active pointer.
+        mgr.clear_active_if(session.id).await;
+        assert_eq!(mgr.get_active().await, None);
+
+        // The behavior under test: select the dormant session without flipping
+        // its status.
+        mgr.set_active_only(session.id).await.unwrap();
+        assert_eq!(mgr.get_active().await, Some(session.id));
+        let s = mgr.get_session(session.id).await.unwrap();
+        assert!(matches!(s.status, SessionStatus::Exited(0))); // PRESERVED, not Active
+    }
+
+    #[tokio::test]
+    async fn set_active_only_demotes_previously_active() {
+        let mgr = SessionManager::new();
+        let live = mgr
+            .create_session("c".into(), vec![], "C:\\a".into(), None, None, vec![], false)
+            .await
+            .unwrap();
+        // First session auto-activates → status = Active, active_session = live.id
+        assert_eq!(mgr.get_active().await, Some(live.id));
+        let live_state = mgr.get_session(live.id).await.unwrap();
+        assert_eq!(live_state.status, SessionStatus::Active);
+
+        // Create + mark-exited a second session for the dormant-select scenario.
+        let dormant = mgr
+            .create_session("c".into(), vec![], "C:\\b".into(), None, None, vec![], false)
+            .await
+            .unwrap();
+        mgr.mark_exited(dormant.id, 0).await;
+
+        mgr.set_active_only(dormant.id).await.unwrap();
+
+        // Active pointer moved.
+        assert_eq!(mgr.get_active().await, Some(dormant.id));
+        // Previously-active demoted: Active → Running.
+        let live_after = mgr.get_session(live.id).await.unwrap();
+        assert_eq!(live_after.status, SessionStatus::Running);
+        // New active preserved as Exited.
+        let dormant_after = mgr.get_session(dormant.id).await.unwrap();
+        assert!(matches!(dormant_after.status, SessionStatus::Exited(0)));
+    }
+
+    #[tokio::test]
+    async fn set_active_only_returns_session_not_found_for_unknown_id() {
+        let mgr = SessionManager::new();
+        let bogus = uuid::Uuid::new_v4();
+        let err = mgr.set_active_only(bogus).await.unwrap_err();
+        assert!(matches!(err, AppError::SessionNotFound(_)));
+        // Active pointer untouched.
+        assert_eq!(mgr.get_active().await, None);
+    }
+
+    // ── Issue #248 / Grinch Z9 — defer + set_active_only + list_sessions chain ──
+
+    #[tokio::test]
+    async fn issue_248_defer_set_active_only_list_sessions_chain() {
+        let mgr = SessionManager::new();
+        // Simulate the defer arm of lib.rs §3.4: create a session, mark_exited,
+        // clear_active_if.
+        let session = mgr
+            .create_session(
+                "claude".into(),
+                vec![],
+                "C:\\proj\\.ac-new\\_agent_architect".into(),
+                Some("aid".into()),
+                Some("Architect".into()),
+                vec![],
+                true, // is_coordinator
+            )
+            .await
+            .unwrap();
+        mgr.mark_exited(session.id, 0).await;
+        mgr.clear_active_if(session.id).await;
+
+        // Simulate the post-loop active-switch (§3.7) with the dormant branch.
+        mgr.set_active_only(session.id).await.unwrap();
+
+        // The wire payload (what list_sessions IPC returns to the frontend).
+        let infos = mgr.list_sessions().await;
+        assert_eq!(infos.len(), 1);
+        let json = serde_json::to_value(&infos[0]).unwrap();
+
+        // The critical assertion — Round-2 Z1 blocker.
+        // Before Fix A, this would be `"status":"active"` and the FE would
+        // render the live dot, taking the wrong click path. With Fix A, status
+        // round-trips as the object form for SessionStatus::Exited.
+        assert_eq!(json["status"], serde_json::json!({ "exited": 0 }));
+
+        // Active pointer correctly reflects the selection.
+        assert_eq!(mgr.get_active().await, Some(session.id));
     }
 }

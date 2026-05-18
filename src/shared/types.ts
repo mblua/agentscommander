@@ -128,7 +128,7 @@ export interface AppSettings {
   defaultShellArgs: string[];
   agents: AgentConfig[];
   telegramBots: TelegramBotConfig[];
-  startOnlyCoordinators: boolean;
+  restoreCoordinatorWakeState: boolean;
   sidebarAlwaysOnTop: boolean;
   raiseTerminalOnClick: boolean;
   soundsEnabled: boolean;

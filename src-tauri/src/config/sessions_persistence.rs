@@ -7,11 +7,17 @@ use crate::session::manager::SessionManager;
 use crate::session::session::{SessionStatus, TEMP_SESSION_PREFIX};
 
 /// Minimal session data needed to restore a session on next app start.
-/// No UUID, no status - just the "recipe" to re-create it.
+/// No UUID, just the "recipe" to re-create it.
 ///
-/// The optional runtime fields (id, status, waiting_for_input, created_at) are
+/// The optional runtime fields (id, waiting_for_input, created_at) are
 /// populated during live snapshots so the CLI can read session state from the
 /// file without requiring an HTTP request. They are ignored on restore.
+///
+/// `status` is also populated during live snapshots for CLI consumption AND is
+/// now **consumed on restore** by the issue #248 startup wake policy: the
+/// restore-task closure in `lib.rs` reads `status` to decide whether a
+/// coordinator should be auto-woken (was awake at shutdown) or left dormant
+/// (was asleep at shutdown). See `should_wake_on_restore` in `lib.rs`.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PersistedSession {
@@ -54,11 +60,14 @@ pub struct PersistedSession {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub git_branch_prefix: Option<String>,
 
-    // ── Runtime fields (populated during live snapshots, ignored on restore) ──
+    // ── Runtime fields (populated during live snapshots; `status` consumed on
+    //    restore per issue #248, the others ignored on restore) ──
     /// Session UUID (only present in live snapshots)
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
-    /// Current session status (only present in live snapshots)
+    /// Current session status. Populated during live snapshots; **consumed on
+    /// restore** by the issue #248 startup wake policy (see
+    /// `should_wake_on_restore` in `lib.rs`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub status: Option<SessionStatus>,
     /// Whether the session is waiting for user input (only present in live snapshots)
@@ -1031,6 +1040,39 @@ mod tests {
         assert_eq!(ps.git_repos[0].source_path, "C:/repos/agentscommander");
         assert!(ps.git_branch_source.is_none());
         assert!(ps.git_branch_prefix.is_none());
+    }
+
+    /// Issue #248 — status round-trips through serialize/deserialize.
+    /// Locks the field against future "ignored on restore" misreads now that
+    /// `should_wake_on_restore` in `lib.rs` consumes it.
+    #[test]
+    fn issue_248_status_round_trips_through_persistence() {
+        use crate::session::session::SessionStatus;
+        let cases = [SessionStatus::Exited(0), SessionStatus::Running];
+        for status in cases {
+            let ps = PersistedSession {
+                name: "coord-x".into(),
+                shell: "claude".into(),
+                shell_args: vec![],
+                working_directory: "C:/proj/.ac-new/_agent_architect".into(),
+                was_active: true,
+                git_repos: vec![],
+                is_coordinator: true,
+                agent_id: Some("aid-arch".into()),
+                agent_label: Some("Architect".into()),
+                was_detached: false,
+                detached_geometry: None,
+                git_branch_source: None,
+                git_branch_prefix: None,
+                id: Some("uuid".into()),
+                status: Some(status.clone()),
+                waiting_for_input: Some(false),
+                created_at: Some("2026-05-17T00:00:00Z".into()),
+            };
+            let json = serde_json::to_string(&ps).expect("serialize");
+            let back: PersistedSession = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(back.status, Some(status));
+        }
     }
 
     /// Legacy "multi-repo" prefix → git_repos stays empty; legacy fields cleared.
