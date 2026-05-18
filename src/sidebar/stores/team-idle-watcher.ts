@@ -165,9 +165,21 @@ export function startTeamIdleWatcher(): () => void {
 
     // Spawn the OS focus listener; capture the unlisten so we can
     // detach it in dispose. The signal stays at its default until
-    // the async listener resolves.
+    // the async listener resolves. `disposed` guards the race where
+    // the watcher is torn down before the dynamic import resolves —
+    // without it the listener would be registered into an orphan
+    // variable and leak forever.
+    let disposed = false;
     let unlistenOsFocus: (() => void) | null = null;
     void startOsFocusListener().then((unlisten) => {
+      if (disposed) {
+        try {
+          unlisten();
+        } catch {
+          // ignore — best-effort detach
+        }
+        return;
+      }
       unlistenOsFocus = unlisten;
     });
 
@@ -221,15 +233,14 @@ export function startTeamIdleWatcher(): () => void {
       const focusedWg =
         hasOsFocus && activeId ? sessionToWg.get(activeId) ?? null : null;
 
-      previousFocusedWg = updateGraceOnFocusChange(
-        previousFocusedWg,
-        focusedWg,
-        graceUntil,
-        Date.now(),
-        GRACE_MS,
-      );
-
       // 4. First run is snapshot-only — see header comment.
+      //    Crucially, we skip the focus-transition bookkeeping on
+      //    the snapshot tick: the OS-focus listener resolves
+      //    asynchronously, so the initial tick may run with the
+      //    default-true `osFocused` seed even when AC was launched
+      //    in the background. Seeding `previousFocusedWg` here
+      //    would then arm a phantom grace window on the first real
+      //    tick once `osFocused` resolves to false.
       if (!initialized) {
         initialized = true;
         for (const [wgPath, perSession] of currentByWg) {
@@ -237,6 +248,14 @@ export function startTeamIdleWatcher(): () => void {
         }
         return;
       }
+
+      previousFocusedWg = updateGraceOnFocusChange(
+        previousFocusedWg,
+        focusedWg,
+        graceUntil,
+        Date.now(),
+        GRACE_MS,
+      );
 
       // 5. Detect genuine busy→idle transitions per workgroup.
       if (enabled) {
@@ -293,6 +312,7 @@ export function startTeamIdleWatcher(): () => void {
     });
 
     return () => {
+      disposed = true;
       if (unlistenOsFocus) {
         try {
           unlistenOsFocus();

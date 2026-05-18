@@ -36,6 +36,14 @@ describe("shouldSuppressBeep (#254)", () => {
     const grace = new Map<string, number>([["A", 4000]]);
     expect(shouldSuppressBeep("A", "B", grace, 5000)).toBe(false);
   });
+
+  it("does NOT suppress at the exact grace boundary (now === until)", () => {
+    // The half-open window `now < until` means `now === until` is
+    // already outside grace. Locks in the boundary explicitly so a
+    // future refactor to `now <= until` would have to flip this test.
+    const grace = new Map<string, number>([["A", 4000]]);
+    expect(shouldSuppressBeep("A", "B", grace, 4000)).toBe(false);
+  });
 });
 
 describe("updateGraceOnFocusChange (#254)", () => {
@@ -116,6 +124,21 @@ describe("updateGraceOnFocusChange (#254)", () => {
     const grace = new Map<string, number>();
     const result = updateGraceOnFocusChange("A", "A", grace, 1000, GRACE_MS);
     expect(result).toBe("A");
+    expect(grace.size).toBe(0);
+  });
+
+  it("background-open: first real tick after listener resolves does not arm grace", () => {
+    // Regression guard for the bug where the snapshot tick seeded
+    // `previousFocusedWg` from a still-default-true `osFocused`,
+    // causing the first real tick (after the async listener
+    // resolved `osFocused` to false) to fire a phantom grace
+    // window for the active session's WG. The fix moves the
+    // updateGraceOnFocusChange call past the snapshot early-return,
+    // so the first real tick always sees `previousFocusedWg` of
+    // null and the resolved `focusedWg` — null→null is a no-op.
+    const grace = new Map<string, number>();
+    const result = updateGraceOnFocusChange(null, null, grace, 1000, GRACE_MS);
+    expect(result).toBeNull();
     expect(grace.size).toBe(0);
   });
 });
