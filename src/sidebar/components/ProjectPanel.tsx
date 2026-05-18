@@ -860,8 +860,8 @@ const ProjectPanel: Component = () => {
                                     </span>
                                     <div class="ac-wg-header-text">
                                       <span class="ac-wg-name">{wg.name}</span>
-                                      <Show when={stripFrontmatter(wg.brief ?? "").trim()}>
-                                        {(brief) => <span class="ac-wg-brief">{brief()}</span>}
+                                      <Show when={wg.briefTitle?.trim() || stripFrontmatter(wg.brief ?? "").trim()}>
+                                        {(text) => <span class="ac-wg-brief">{text()}</span>}
                                       </Show>
                                     </div>
                                   </div>
