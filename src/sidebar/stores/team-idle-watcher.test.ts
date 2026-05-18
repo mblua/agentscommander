@@ -13,11 +13,10 @@
 
 import { describe, it, expect } from "vitest";
 import {
+  GRACE_MS,
   shouldSuppressBeep,
   updateGraceOnFocusChange,
 } from "./team-idle-watcher";
-
-const GRACE_MS = 4000;
 
 describe("shouldSuppressBeep (#254)", () => {
   it("suppresses the focused workgroup", () => {

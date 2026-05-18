@@ -44,7 +44,7 @@ import { settingsStore } from "../../shared/stores/settings";
 import { sessionsStore } from "./sessions";
 import { projectStore } from "./project";
 
-const GRACE_MS = 4000;
+export const GRACE_MS = 4000;
 
 // OS-level focus state for the AC sidebar window. Driven by
 // Tauri's onFocusChanged event; treated as true on mount so the
