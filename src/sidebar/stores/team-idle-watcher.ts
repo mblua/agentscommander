@@ -29,13 +29,94 @@
 // settingsStore.load()` the synchronous reactive owner is gone.
 // createRoot gives the effect its own owner and an explicit dispose
 // we can call from onCleanup.
+//
+// **Focused-WG suppression (#254)**: while the user is looking at a
+// workgroup (the active session belongs to it AND the AC window holds
+// OS focus), that workgroup's beep is gated off — they can already
+// see the state change, the beep is redundant. When focus moves away
+// (tab switch or alt-tab), the just-left workgroup keeps suppressing
+// for GRACE_MS to absorb the user's typical short detour back.
 
-import { createEffect, createRoot } from "solid-js";
+import { createEffect, createRoot, createSignal } from "solid-js";
 import type { Session } from "../../shared/types";
 import { playTeamIdleBeep } from "../../shared/sound";
 import { settingsStore } from "../../shared/stores/settings";
 import { sessionsStore } from "./sessions";
 import { projectStore } from "./project";
+
+const GRACE_MS = 4000;
+
+// OS-level focus state for the AC sidebar window. Driven by
+// Tauri's onFocusChanged event; treated as true on mount so the
+// initial tick (before the listener has reported anything) treats
+// the visible WG as focused. Exposed as a signal so the watcher's
+// createEffect re-runs on focus flips even when no session has
+// changed — without this, alt-tab→idle transitions inside the
+// grace window would miss the grace setter.
+const [osFocused, setOsFocused] = createSignal(true);
+
+/**
+ * Pure decision helper: should we suppress the beep for `wgPath`
+ * given the current focus state and grace map?
+ *
+ * Suppressed when the workgroup is currently focused, OR a grace
+ * entry exists for it and `now` is still inside the window.
+ */
+export function shouldSuppressBeep(
+  wgPath: string,
+  focusedWg: string | null,
+  graceUntil: ReadonlyMap<string, number>,
+  now: number,
+): boolean {
+  if (wgPath === focusedWg) return true;
+  const until = graceUntil.get(wgPath);
+  return until !== undefined && now < until;
+}
+
+/**
+ * Pure transition helper: on a focus change, arm a grace window
+ * for the workgroup being left behind (if any) and return the new
+ * "previous focused WG" to persist for the next tick.
+ *
+ * Mutates `graceUntil` in place — callers own the map. Returns the
+ * value the caller should assign to its `previousFocusedWg`.
+ */
+export function updateGraceOnFocusChange(
+  previousFocusedWg: string | null,
+  focusedWg: string | null,
+  graceUntil: Map<string, number>,
+  now: number,
+  graceMs: number,
+): string | null {
+  if (previousFocusedWg !== focusedWg && previousFocusedWg !== null) {
+    graceUntil.set(previousFocusedWg, now + graceMs);
+  }
+  return focusedWg;
+}
+
+async function startOsFocusListener(): Promise<() => void> {
+  try {
+    const { getCurrentWindow } = await import("@tauri-apps/api/window");
+    const win = getCurrentWindow();
+    // Best-effort initial sync: if the window is already
+    // unfocused at mount, reflect that before any tick runs.
+    try {
+      const focused = await win.isFocused();
+      setOsFocused(focused);
+    } catch {
+      // Non-fatal — keep the default-true seed.
+    }
+    const unlisten = await win.onFocusChanged(({ payload: focused }) => {
+      setOsFocused(focused);
+    });
+    return unlisten;
+  } catch {
+    // Browser/WS transport or import failure — assume always-focused
+    // so the legacy behavior (per-WG suppression keyed only on
+    // activeId) still applies; we just can't react to OS alt-tab.
+    return () => {};
+  }
+}
 
 function isExited(status: Session["status"]): boolean {
   return typeof status === "object" && status !== null && "exited" in status;
@@ -70,12 +151,32 @@ export function startTeamIdleWatcher(): () => void {
     // that were not alive last tick (destroyed/exited) won't appear.
     const previousByWg = new Map<string, Map<string, boolean>>();
 
+    // wg.path -> epoch ms at which the grace period for that WG
+    // ends. Populated whenever effective focus moves off a WG; the
+    // entry suppresses beeps for that WG until Date.now() >= value.
+    const graceUntil = new Map<string, number>();
+
+    // The effective focused WG from the previous effect tick. Used
+    // to detect focus *transitions* so we can arm the grace window
+    // for the WG being left behind.
+    let previousFocusedWg: string | null = null;
+
     let initialized = false;
+
+    // Spawn the OS focus listener; capture the unlisten so we can
+    // detach it in dispose. The signal stays at its default until
+    // the async listener resolves.
+    let unlistenOsFocus: (() => void) | null = null;
+    void startOsFocusListener().then((unlisten) => {
+      unlistenOsFocus = unlisten;
+    });
 
     createEffect(() => {
       const sessions = sessionsStore.sessions;
       const projects = projectStore.projects;
       const enabled = settingsStore.current?.teamIdleBeepEnabled ?? true;
+      const activeId = sessionsStore.activeId;
+      const hasOsFocus = osFocused();
 
       // 1. Augment bindings (never unbind). Iterate workgroups and
       //    bind any newly-discovered replica-session pairs by name.
@@ -112,7 +213,23 @@ export function startTeamIdleWatcher(): () => void {
         inner.set(sessionId, isBusy(session));
       }
 
-      // 3. First run is snapshot-only — see header comment.
+      // 3. Resolve the effective focused workgroup for this tick.
+      //    A WG is "focused" only when AC has OS focus AND the
+      //    active session is bound to that WG. Losing either
+      //    condition (alt-tab, tab switch) collapses focusedWg to
+      //    null and arms a grace window for the WG being left.
+      const focusedWg =
+        hasOsFocus && activeId ? sessionToWg.get(activeId) ?? null : null;
+
+      previousFocusedWg = updateGraceOnFocusChange(
+        previousFocusedWg,
+        focusedWg,
+        graceUntil,
+        Date.now(),
+        GRACE_MS,
+      );
+
+      // 4. First run is snapshot-only — see header comment.
       if (!initialized) {
         initialized = true;
         for (const [wgPath, perSession] of currentByWg) {
@@ -121,8 +238,9 @@ export function startTeamIdleWatcher(): () => void {
         return;
       }
 
-      // 4. Detect genuine busy→idle transitions per workgroup.
+      // 5. Detect genuine busy→idle transitions per workgroup.
       if (enabled) {
+        const now = Date.now();
         for (const [wgPath, currentBusy] of currentByWg) {
           const previousBusy = previousByWg.get(wgPath);
           if (!previousBusy) continue;
@@ -152,11 +270,20 @@ export function startTeamIdleWatcher(): () => void {
           }
           if (!allIdle) continue;
 
+          if (shouldSuppressBeep(wgPath, focusedWg, graceUntil, now)) continue;
+
           void playTeamIdleBeep();
+        }
+
+        // Drop expired grace entries so the map stays bounded by
+        // the count of currently-tracked WGs (already finite, but
+        // tidier).
+        for (const [wgPath, until] of graceUntil) {
+          if (now >= until) graceUntil.delete(wgPath);
         }
       }
 
-      // 5. Persist current state for the next tick. Workgroups that
+      // 6. Persist current state for the next tick. Workgroups that
       //    no longer have any alive bound sessions drop out, so a
       //    later resurrection starts from a clean snapshot.
       previousByWg.clear();
@@ -165,6 +292,16 @@ export function startTeamIdleWatcher(): () => void {
       }
     });
 
-    return dispose;
+    return () => {
+      if (unlistenOsFocus) {
+        try {
+          unlistenOsFocus();
+        } catch {
+          // ignore — best-effort detach
+        }
+        unlistenOsFocus = null;
+      }
+      dispose();
+    };
   });
 }
