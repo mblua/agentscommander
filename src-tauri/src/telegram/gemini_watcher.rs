@@ -502,7 +502,9 @@ mod tests {
 
         let a = chats.join("session-2026-05-01T00-00-aaaaaaaa.jsonl");
         fs::write(&a, b"{}").unwrap();
-        std::thread::sleep(std::time::Duration::from_millis(20));
+        // Windows NTFS mtime resolution can be as coarse as 100 ms; sleep
+        // long enough that the two files definitely have distinct mtimes.
+        std::thread::sleep(std::time::Duration::from_millis(150));
         let b = chats.join("session-2026-05-02T00-00-bbbbbbbb.jsonl");
         fs::write(&b, b"{}").unwrap();
 
