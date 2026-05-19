@@ -61,9 +61,23 @@ pub(crate) fn derive_reader(
         };
     }
     if is_gemini {
-        // Gemini reader lands in commit 4 (#258). Until then, Gemini sessions
-        // fall back to PTY mode just like undetected agents.
-        return Ok(None);
+        // H1 softened contract: spawn the watcher whenever `~/.gemini/` exists;
+        // the cwd-to-slug lookup is deferred to the watcher's per-poll
+        // `lookup_chats_dir_for_cwd`. Loud abort only if Gemini was never
+        // installed on this machine.
+        return match crate::commands::gemini_resolver::resolve_gemini_home(
+            shell, shell_args, cwd,
+        ) {
+            Some(home) => Ok(Some(SessionReaderKind::Gemini {
+                gemini_home: home,
+                cwd: cwd.to_string(),
+                attach_time,
+            })),
+            None => Err(
+                "Cannot resolve Gemini home (~/.gemini/ missing — Gemini never installed)"
+                    .to_string(),
+            ),
+        };
     }
     Ok(None) // No agent detected — caller falls back to PTY mode.
 }

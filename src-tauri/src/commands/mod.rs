@@ -2,6 +2,7 @@ pub mod ac_discovery;
 pub mod agent_creator;
 pub mod brief;
 pub mod codex_resolver;
+pub mod gemini_resolver;
 pub mod config;
 pub mod entity_creation;
 pub mod phone;

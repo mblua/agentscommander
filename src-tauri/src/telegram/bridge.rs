@@ -427,7 +427,6 @@ pub enum SessionReaderKind {
     /// Watch Gemini CLI's append-only `session-*.jsonl` under
     /// `~/.gemini/tmp/<slug>/chats/`. The slug is resolved lazily by the
     /// watcher on each poll via `lookup_chats_dir_for_cwd` until it succeeds.
-    #[allow(dead_code)] // constructed in commit 4
     Gemini {
         gemini_home: PathBuf,
         cwd: String,
@@ -484,11 +483,22 @@ pub fn spawn_bridge(
                 app_handle.clone(),
             );
         }
-        Some(SessionReaderKind::Gemini { .. }) => {
-            // Gemini watcher lands in commit 4 (#258). `derive_reader` does not
-            // produce this variant yet, so this arm is currently unreachable.
+        Some(SessionReaderKind::Gemini {
+            gemini_home,
+            cwd,
+            attach_time,
+        }) => {
             drop(rx);
-            unreachable!("Gemini SessionReaderKind constructed without gemini_watcher being wired (commit 4 of #258 lifts this)");
+            super::gemini_watcher::spawn_watch_task(
+                gemini_home,
+                cwd,
+                attach_time,
+                bot_token.clone(),
+                chat_id,
+                session_id_str.clone(),
+                cancel.clone(),
+                app_handle.clone(),
+            );
         }
         None => {
             // PTY mode: existing 6-phase pipeline
