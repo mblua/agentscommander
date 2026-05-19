@@ -90,6 +90,14 @@ pub struct Session {
     /// Used by the Telegram bridge to choose JSONL watcher vs PTY pipeline.
     #[serde(default)]
     pub is_claude: bool,
+    /// True if this session runs Codex CLI (detected at creation time).
+    /// Used by the Telegram bridge to choose the Codex JSONL watcher.
+    #[serde(default)]
+    pub is_codex: bool,
+    /// True if this session runs Gemini CLI (detected at creation time).
+    /// Used by the Telegram bridge to choose the Gemini JSONL watcher.
+    #[serde(default)]
+    pub is_gemini: bool,
     /// True while this session has a live detached window (or is marked to re-spawn
     /// one on next launch). Source of truth for persistence — `snapshot_sessions`
     /// reads this directly, NOT from `DetachedSessionsState`.
@@ -179,6 +187,10 @@ pub struct SessionInfo {
     #[serde(default)]
     pub is_claude: bool,
     #[serde(default)]
+    pub is_codex: bool,
+    #[serde(default)]
+    pub is_gemini: bool,
+    #[serde(default)]
     pub was_detached: bool,
     /// Not serialized to the frontend — internal carrier for `snapshot_sessions`
     /// so persistence can read the last-known detached-window geometry without a
@@ -208,6 +220,8 @@ impl From<&Session> for SessionInfo {
             is_coordinator: s.is_coordinator,
             token: s.token.to_string(),
             is_claude: s.is_claude,
+            is_codex: s.is_codex,
+            is_gemini: s.is_gemini,
             was_detached: s.was_detached,
             detached_geometry: s.detached_geometry.clone(),
         }
@@ -238,6 +252,8 @@ mod tests {
             git_repos_gen: 0,
             token: Uuid::nil(),
             is_claude: false,
+            is_codex: false,
+            is_gemini: false,
             was_detached: false,
             detached_geometry: None,
         }

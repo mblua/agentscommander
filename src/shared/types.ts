@@ -22,6 +22,9 @@ export interface Session {
   workgroupBrief: string | null;
   isCoordinator: boolean;
   token: string;
+  isClaude: boolean;
+  isCodex: boolean;
+  isGemini: boolean;
 }
 
 export type SessionStatus = "active" | "running" | "idle" | { exited: number };
