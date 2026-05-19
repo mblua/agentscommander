@@ -411,6 +411,30 @@ fn is_thinking_line(s: &str) -> bool {
 
 // ── Bridge spawn ─────────────────────────────────────────────
 
+/// Which session-reader pipeline to spawn for this bridge. `None` (the bridge
+/// signature) falls back to the PTY 6-phase pipeline (legacy noisy mode).
+#[derive(Debug, Clone)]
+pub enum SessionReaderKind {
+    /// Watch Claude Code's append-only JSONL session log at the resolved projects dir.
+    Claude { project_dir: PathBuf },
+    /// Watch Codex CLI's append-only `rollout-*.jsonl` under `~/.codex/sessions/`,
+    /// filtering candidates by `session_meta.cwd` match.
+    Codex {
+        search_root: PathBuf,
+        cwd: String,
+        attach_time: chrono::DateTime<chrono::Utc>,
+    },
+    /// Watch Gemini CLI's append-only `session-*.jsonl` under
+    /// `~/.gemini/tmp/<slug>/chats/`. The slug is resolved lazily by the
+    /// watcher on each poll via `lookup_chats_dir_for_cwd` until it succeeds.
+    #[allow(dead_code)] // constructed in commit 4
+    Gemini {
+        gemini_home: PathBuf,
+        cwd: String,
+        attach_time: chrono::DateTime<chrono::Utc>,
+    },
+}
+
 pub struct BridgeHandle {
     pub info: BridgeInfo,
     pub cancel: CancellationToken,
@@ -424,34 +448,59 @@ pub fn spawn_bridge(
     info: BridgeInfo,
     pty_mgr: Arc<Mutex<PtyManager>>,
     app_handle: tauri::AppHandle,
-    jsonl_project_dir: Option<PathBuf>,
+    reader: Option<SessionReaderKind>,
 ) -> BridgeHandle {
     let cancel = CancellationToken::new();
     let (tx, rx) = mpsc::channel::<Vec<u8>>(256);
 
     let session_id_str = session_id.to_string();
 
-    if let Some(project_dir) = jsonl_project_dir {
-        // JSONL mode: watch Claude Code session log instead of PTY pipeline
-        drop(rx); // not needed — no PTY bytes feed
-        super::claude_watcher::spawn_watch_task(
-            project_dir,
-            bot_token.clone(),
-            chat_id,
-            session_id_str.clone(),
-            cancel.clone(),
-            app_handle.clone(),
-        );
-    } else {
-        // PTY mode: existing 6-phase pipeline
-        tokio::spawn(output_task(
-            rx,
-            bot_token.clone(),
-            chat_id,
-            session_id_str.clone(),
-            cancel.clone(),
-            app_handle.clone(),
-        ));
+    match reader {
+        Some(SessionReaderKind::Claude { project_dir }) => {
+            drop(rx); // not needed — no PTY bytes feed
+            super::claude_watcher::spawn_watch_task(
+                project_dir,
+                bot_token.clone(),
+                chat_id,
+                session_id_str.clone(),
+                cancel.clone(),
+                app_handle.clone(),
+            );
+        }
+        Some(SessionReaderKind::Codex {
+            search_root,
+            cwd,
+            attach_time,
+        }) => {
+            drop(rx);
+            super::codex_watcher::spawn_watch_task(
+                search_root,
+                cwd,
+                attach_time,
+                bot_token.clone(),
+                chat_id,
+                session_id_str.clone(),
+                cancel.clone(),
+                app_handle.clone(),
+            );
+        }
+        Some(SessionReaderKind::Gemini { .. }) => {
+            // Gemini watcher lands in commit 4 (#258). `derive_reader` does not
+            // produce this variant yet, so this arm is currently unreachable.
+            drop(rx);
+            unreachable!("Gemini SessionReaderKind constructed without gemini_watcher being wired (commit 4 of #258 lifts this)");
+        }
+        None => {
+            // PTY mode: existing 6-phase pipeline
+            tokio::spawn(output_task(
+                rx,
+                bot_token.clone(),
+                chat_id,
+                session_id_str.clone(),
+                cancel.clone(),
+                app_handle.clone(),
+            ));
+        }
     }
 
     // Poll task: Telegram getUpdates -> write to PTY stdin (runs in BOTH modes)
