@@ -8,13 +8,15 @@
 use std::path::PathBuf;
 use std::time::SystemTime;
 
+use chrono::{DateTime, Utc};
 use tauri::Emitter;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
 use crate::telegram::jsonl_kernel::{
-    find_latest_jsonl, read_new_lines, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
+    find_latest_jsonl, read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS,
+    ROTATION_STALE_SECS,
 };
 
 const FLUSH_DELAY_MS: u64 = 500;
@@ -45,6 +47,16 @@ pub fn spawn_watch_task(
         .await;
         log::info!("[JSONL_EXIT] Watcher task ended for session {}", session_id);
     })
+}
+
+/// Extractor for `read_preamble_for_race`: pairs each emitted body with the
+/// line's `timestamp` field so the kernel can apply its grace-window filter.
+fn claude_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, String)> {
+    let body = extract_assistant_text(line)?;
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let ts_str = v.get("timestamp")?.as_str()?;
+    let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
+    Some((ts, body))
 }
 
 /// Parse a single JSONL line and extract assistant text content.
@@ -113,6 +125,7 @@ async fn watch_loop(
     let mut last_buffer_add = Instant::now();
     let flush_delay = Duration::from_millis(FLUSH_DELAY_MS);
 
+    let attach_time: DateTime<Utc> = Utc::now();
     let mut current_file: Option<PathBuf> = None;
     let mut current_file_mtime: Option<SystemTime> = None;
     let mut file_offset: u64 = 0;
@@ -161,13 +174,32 @@ async fn watch_loop(
 
                     if should_switch {
                         if current_file.is_none() {
-                            // First attach: skip existing content (seek to end)
-                            file_offset = latest.as_ref()
-                                .and_then(|p| std::fs::metadata(p).ok())
-                                .map(|m| m.len())
-                                .unwrap_or(0);
-                            logger.log("JSONL_FILE", &session_id,
-                                &format!("initial file, skipping to offset {}", file_offset));
+                            // First attach (§J preamble scan): emit recent
+                            // lines from the file's tail, then set offset = file_len.
+                            if let Some(ref p) = latest {
+                                match read_preamble_for_race(p, attach_time, claude_preamble_extractor) {
+                                    Ok((bodies, file_len)) => {
+                                        for text in bodies {
+                                            logger.log("JSONL_PREAMBLE", &session_id, &text);
+                                            buffer.push_str(&text);
+                                            buffer.push('\n');
+                                            last_buffer_add = Instant::now();
+                                        }
+                                        file_offset = file_len;
+                                        logger.log("JSONL_FILE", &session_id,
+                                            &format!("initial file, preamble scan done, offset={}", file_offset));
+                                    }
+                                    Err(e) => {
+                                        logger.log("JSONL_ERR", &session_id,
+                                            &format!("preamble scan failed: {}", e));
+                                        file_offset = std::fs::metadata(p).ok()
+                                            .map(|m| m.len())
+                                            .unwrap_or(0);
+                                    }
+                                }
+                            } else {
+                                file_offset = 0;
+                            }
                         } else {
                             // File rotation (new Claude session): read from start
                             file_offset = 0;

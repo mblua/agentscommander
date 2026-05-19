@@ -18,7 +18,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::gemini_resolver::lookup_chats_dir_for_cwd;
 use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
-use crate::telegram::jsonl_kernel::{read_new_lines, POLL_INTERVAL_MS, ROTATION_STALE_SECS};
+use crate::telegram::jsonl_kernel::{
+    read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
+};
 
 /// Buffer thresholds tuned for Gemini's whole-turn-at-once cadence.
 const FLUSH_DELAY_MS: u64 = 250;
@@ -54,6 +56,18 @@ pub fn spawn_watch_task(
     })
 }
 
+/// Extractor for `read_preamble_for_race`: pairs each emitted body with the
+/// line's `timestamp` field so the kernel can apply its grace-window filter.
+/// The kernel sees only the BODY; dedup against `emitted_ids` happens at the
+/// call site post-preamble.
+fn gemini_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, String)> {
+    let (_id, body) = extract_gemini_message(line)?;
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let ts_str = v.get("timestamp")?.as_str()?;
+    let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
+    Some((ts, body))
+}
+
 /// Parse a Gemini `.jsonl` line and extract `(id, content)` for `type:"gemini"`
 /// records with non-empty string content. Returns `None` for any other record
 /// kind (session header, `$set`, `$rewindTo`, `type:"user"`, `type:"info"`,
@@ -74,6 +88,62 @@ fn extract_gemini_message(line: &str) -> Option<(String, String)> {
         return None;
     }
     Some((id, content.to_string()))
+}
+
+/// Walk the same preamble window the §J scan reads, parse every
+/// `type:"gemini"` line's `id`, and insert into `emitted_ids` so subsequent
+/// `read_new_lines` calls treat already-emitted ids as duplicates. Errors are
+/// swallowed (the watcher still polls forward; worst case a duplicate emit).
+fn seed_emitted_ids_from_preamble(
+    path: &Path,
+    attach_time: DateTime<Utc>,
+    emitted_ids: &mut HashSet<String>,
+) {
+    use crate::telegram::jsonl_kernel::{PREAMBLE_MAX_BYTES, RACE_GRACE_SECS};
+    use std::io::{Read as IoRead, Seek, SeekFrom};
+
+    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else {
+        return;
+    };
+    let start = len.saturating_sub(PREAMBLE_MAX_BYTES);
+    let mut f = match std::fs::File::open(path) {
+        Ok(f) => f,
+        Err(_) => return,
+    };
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return;
+    }
+    let mut buf: Vec<u8> = Vec::with_capacity((len - start) as usize);
+    if f.read_to_end(&mut buf).is_err() {
+        return;
+    }
+    let bytes: &[u8] = if start == 0 {
+        &buf
+    } else {
+        match buf.iter().position(|&b| b == b'\n') {
+            Some(i) => &buf[i + 1..],
+            None => return,
+        }
+    };
+    let text = String::from_utf8_lossy(bytes);
+    let cutoff = attach_time - chrono::Duration::seconds(RACE_GRACE_SECS);
+    for line in text.lines() {
+        if let Some((id, _content)) = extract_gemini_message(line) {
+            let v: serde_json::Value = match serde_json::from_str(line) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            let ts_ok = v
+                .get("timestamp")
+                .and_then(|t| t.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|t| t.with_timezone(&Utc) >= cutoff)
+                .unwrap_or(true); // unknown timestamp → treat as recent
+            if ts_ok {
+                emitted_ids.insert(id);
+            }
+        }
+    }
 }
 
 /// Non-recursive scan of `chats_dir`: returns the newest file whose name
@@ -132,7 +202,7 @@ fn dir_has_extension(chats_dir: &Path, ext_without_dot: &str) -> bool {
 async fn watch_loop(
     gemini_home: PathBuf,
     cwd: String,
-    _attach_time: DateTime<Utc>,
+    attach_time: DateTime<Utc>,
     token: String,
     chat_id: i64,
     session_id: String,
@@ -252,17 +322,44 @@ async fn watch_loop(
                 if need_rescan {
                     if let Some(found) = find_newest_session_jsonl(chats_dir_ref) {
                         if Some(&found) != current_file.as_ref() {
-                            // Bind to the newest file. On rotation (mid-session /new),
-                            // clear emitted_ids so the new file's ids don't collide.
-                            file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
+                            let first_bind = current_file.is_none();
                             line_remainder.clear();
-                            if current_file.is_some() {
+                            if first_bind {
+                                // §J preamble scan on first bind. Re-emit recent
+                                // assistant lines from the file's tail (timestamp
+                                // >= attach_time - 5s). Dedup against emitted_ids:
+                                // each id is tracked here so subsequent reads
+                                // don't re-emit.
+                                match read_preamble_for_race(&found, attach_time, gemini_preamble_extractor) {
+                                    Ok((bodies, file_len)) => {
+                                        // The preamble extractor surfaced bodies WITHOUT ids,
+                                        // so we can't dedup THIS pass against future appends with
+                                        // the same id. To keep correctness, re-parse the preamble
+                                        // window's lines to grab ids and seed emitted_ids.
+                                        seed_emitted_ids_from_preamble(&found, attach_time, &mut emitted_ids);
+                                        for text in bodies {
+                                            logger.log("GEMINI_PREAMBLE", &session_id, &text);
+                                            buffer.push_str(&text);
+                                            buffer.push('\n');
+                                            last_buffer_add = Instant::now();
+                                        }
+                                        file_offset = file_len;
+                                        logger.log("GEMINI_FILE", &session_id,
+                                            &format!("bound to {}, preamble done, offset={}",
+                                                found.display(), file_offset));
+                                    }
+                                    Err(e) => {
+                                        logger.log("GEMINI_ERR", &session_id,
+                                            &format!("preamble scan failed: {}", e));
+                                        file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
+                                    }
+                                }
+                            } else {
+                                // Rotation (mid-session /new). Clear dedup and re-anchor at EOF.
                                 emitted_ids.clear();
+                                file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
                                 logger.log("GEMINI_ROTATE", &session_id,
                                     &format!("rotated to {}", found.display()));
-                            } else {
-                                logger.log("GEMINI_FILE", &session_id,
-                                    &format!("bound to {} at offset {}", found.display(), file_offset));
                             }
                             current_file = Some(found);
                         }

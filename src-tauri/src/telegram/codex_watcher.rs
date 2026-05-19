@@ -16,7 +16,9 @@ use tokio_util::sync::CancellationToken;
 
 use crate::commands::codex_resolver::canonicalize_cwd_for_codex;
 use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
-use crate::telegram::jsonl_kernel::{read_new_lines, POLL_INTERVAL_MS, ROTATION_STALE_SECS};
+use crate::telegram::jsonl_kernel::{
+    read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
+};
 
 /// Buffer thresholds tuned for Codex's commentary cadence.
 /// `event_msg + agent_message` events average 200-400 B and arrive 3-8 per
@@ -57,6 +59,17 @@ pub fn spawn_watch_task(
         .await;
         log::info!("[CODEX_EXIT] Watcher task ended for session {}", session_id);
     })
+}
+
+/// Extractor for `read_preamble_for_race`: pairs each emitted body with the
+/// line's top-level `timestamp` field so the kernel can apply its grace-window
+/// filter.
+fn codex_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, String)> {
+    let body = extract_agent_message(line)?;
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let ts_str = v.get("timestamp")?.as_str()?;
+    let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
+    Some((ts, body))
 }
 
 /// Parse a single Codex rollout JSONL line and extract the `agent_message`
@@ -247,13 +260,37 @@ async fn watch_loop(
                 if need_rescan {
                     if let Some(found) = find_session_file(&search_root, &expected_cwd, attach_time) {
                         if Some(&found) != current_file.as_ref() {
-                            // First bind OR rotation. Initialize offset to current
-                            // file_len so we don't replay existing content (§J
-                            // preamble scan will land in commit 5 and supersede this).
-                            file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
+                            // First bind OR rotation. On first bind, run the §J
+                            // preamble scan to emit any agent_message from the file's
+                            // tail with timestamp >= attach_time - 5s. Then set
+                            // offset = file_len.
+                            let first_bind = current_file.is_none();
                             line_remainder.clear();
-                            logger.log("CODEX_FILE", &session_id,
-                                &format!("bound to {} at offset {}", found.display(), file_offset));
+                            if first_bind {
+                                match read_preamble_for_race(&found, attach_time, codex_preamble_extractor) {
+                                    Ok((bodies, file_len)) => {
+                                        for text in bodies {
+                                            logger.log("CODEX_PREAMBLE", &session_id, &text);
+                                            buffer.push_str(&text);
+                                            buffer.push('\n');
+                                            last_buffer_add = Instant::now();
+                                        }
+                                        file_offset = file_len;
+                                        logger.log("CODEX_FILE", &session_id,
+                                            &format!("bound to {}, preamble done, offset={}", found.display(), file_offset));
+                                    }
+                                    Err(e) => {
+                                        logger.log("CODEX_ERR", &session_id,
+                                            &format!("preamble scan failed: {}", e));
+                                        file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
+                                    }
+                                }
+                            } else {
+                                // Rotation. Re-anchor at the new file's current EOF.
+                                file_offset = std::fs::metadata(&found).ok().map(|m| m.len()).unwrap_or(0);
+                                logger.log("CODEX_ROTATE", &session_id,
+                                    &format!("rotated to {}, offset={}", found.display(), file_offset));
+                            }
                             current_file = Some(found);
                         }
                         current_file_mtime = current_file.as_ref()
