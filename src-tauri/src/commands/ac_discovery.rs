@@ -194,9 +194,17 @@ fn extract_brief_first_line(content: &str) -> Option<String> {
 
     let mut lines = content.lines().peekable();
 
-    // YAML frontmatter: opener `---` on the first line, drain through closer.
+    // Drain leading blank lines first so a stray "\n\n" before the frontmatter
+    // opener doesn't bypass detection and leak the literal `---` into the sidebar.
+    let mut first_non_empty = lines.peek().map(|l| l.trim());
+    while first_non_empty == Some("") {
+        lines.next();
+        first_non_empty = lines.peek().map(|l| l.trim());
+    }
+
+    // YAML frontmatter: opener `---` on the first non-empty line, drain through closer.
     // If the closer is missing, the for-loop drains the rest and `find` returns None.
-    if lines.peek().map(|l| l.trim()) == Some("---") {
+    if first_non_empty == Some("---") {
         lines.next();
         for line in lines.by_ref() {
             if line.trim() == "---" {
@@ -1808,6 +1816,23 @@ mod tests {
             Some("Real Title".to_string())
         );
     }
+
+    #[test]
+    fn brief_leading_blanks_before_frontmatter() {
+        // Regression: leading blank lines before `---` used to bypass the
+        // frontmatter check and leak the literal `---` into the sidebar.
+        let content = "\n\n---\ntitle: x\n---\n# Body";
+        assert_eq!(extract_brief_first_line(content), Some("Body".to_string()));
+    }
+
+    #[test]
+    fn brief_leading_blanks_no_frontmatter() {
+        let content = "\n\n# Body line";
+        assert_eq!(
+            extract_brief_first_line(content),
+            Some("Body line".to_string())
+        );
+    }
 }
 
 type BriefFields = (Option<String>, Option<String>);
@@ -1816,10 +1841,7 @@ fn read_brief_fields(wg_path: &std::path::Path) -> BriefFields {
     let Ok(content) = std::fs::read_to_string(&brief_path) else {
         return (None, None);
     };
-    let brief = content
-        .lines()
-        .next()
-        .map(|l| l.trim_start_matches("# ").to_string());
+    let brief = extract_brief_first_line(&content);
     let brief_title = crate::commands::entity_creation::parse_brief_title(&content);
     (brief, brief_title)
 }
