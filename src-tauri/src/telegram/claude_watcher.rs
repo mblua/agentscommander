@@ -51,12 +51,14 @@ pub fn spawn_watch_task(
 
 /// Extractor for `read_preamble_for_race`: pairs each emitted body with the
 /// line's `timestamp` field so the kernel can apply its grace-window filter.
-fn claude_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, String)> {
+/// Claude does not dedupe by id (idempotent assistant turns are absent in the
+/// JSONL format), so the id slot is always `None`.
+fn claude_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
     let body = extract_assistant_text(line)?;
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let ts_str = v.get("timestamp")?.as_str()?;
     let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
-    Some((ts, body))
+    Some((ts, None, body))
 }
 
 /// Parse a single JSONL line and extract assistant text content.
@@ -178,7 +180,7 @@ async fn watch_loop(
                             // lines from the file's tail, then set offset = file_len.
                             if let Some(ref p) = latest {
                                 match read_preamble_for_race(p, attach_time, claude_preamble_extractor) {
-                                    Ok((bodies, file_len)) => {
+                                    Ok((bodies, _ids, file_len)) => {
                                         for text in bodies {
                                             logger.log("JSONL_PREAMBLE", &session_id, &text);
                                             buffer.push_str(&text);

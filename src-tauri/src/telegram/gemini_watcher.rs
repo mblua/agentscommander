@@ -56,16 +56,18 @@ pub fn spawn_watch_task(
     })
 }
 
-/// Extractor for `read_preamble_for_race`: pairs each emitted body with the
-/// line's `timestamp` field so the kernel can apply its grace-window filter.
-/// The kernel sees only the BODY; dedup against `emitted_ids` happens at the
-/// call site post-preamble.
-fn gemini_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, String)> {
-    let (_id, body) = extract_gemini_message(line)?;
+/// Extractor for `read_preamble_for_race`: returns
+/// `(timestamp, Some(id), body)` for each `type:"gemini"` line. The kernel
+/// returns the surfaced ids alongside the bodies in a single read, which the
+/// watcher uses to seed `emitted_ids` directly — closing the M1 TOCTOU where
+/// a separate seeder pass re-read the file and could mark a line's id as
+/// emitted whose body landed BETWEEN the two reads (silent permanent drop).
+fn gemini_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
+    let (id, body) = extract_gemini_message(line)?;
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let ts_str = v.get("timestamp")?.as_str()?;
     let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
-    Some((ts, body))
+    Some((ts, Some(id), body))
 }
 
 /// Parse a Gemini `.jsonl` line and extract `(id, content)` for `type:"gemini"`
@@ -88,67 +90,6 @@ fn extract_gemini_message(line: &str) -> Option<(String, String)> {
         return None;
     }
     Some((id, content.to_string()))
-}
-
-/// Walk the same preamble window the §J scan reads, parse every
-/// `type:"gemini"` line's `id`, and insert into `emitted_ids` so subsequent
-/// `read_new_lines` calls treat already-emitted ids as duplicates. Errors are
-/// swallowed (the watcher still polls forward; worst case a duplicate emit).
-fn seed_emitted_ids_from_preamble(
-    path: &Path,
-    attach_time: DateTime<Utc>,
-    emitted_ids: &mut HashSet<String>,
-) {
-    use crate::telegram::jsonl_kernel::{PREAMBLE_MAX_BYTES, RACE_GRACE_SECS};
-    use std::io::{Read as IoRead, Seek, SeekFrom};
-
-    let Ok(len) = std::fs::metadata(path).map(|m| m.len()) else {
-        return;
-    };
-    let start = len.saturating_sub(PREAMBLE_MAX_BYTES);
-    let mut f = match std::fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return,
-    };
-    if f.seek(SeekFrom::Start(start)).is_err() {
-        return;
-    }
-    let mut buf: Vec<u8> = Vec::with_capacity((len - start) as usize);
-    if f.read_to_end(&mut buf).is_err() {
-        return;
-    }
-    let bytes: &[u8] = if start == 0 {
-        &buf
-    } else {
-        match buf.iter().position(|&b| b == b'\n') {
-            Some(i) => &buf[i + 1..],
-            None => return,
-        }
-    };
-    let text = String::from_utf8_lossy(bytes);
-    let cutoff = attach_time - chrono::Duration::seconds(RACE_GRACE_SECS);
-    for line in text.lines() {
-        if let Some((id, _content)) = extract_gemini_message(line) {
-            let v: serde_json::Value = match serde_json::from_str(line) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            // Match gemini_preamble_extractor exactly: a line is "emitted" by
-            // the kernel iff it has a parseable timestamp >= cutoff. A line
-            // without a timestamp is dropped by the extractor, so we MUST NOT
-            // pre-mark its id as emitted here — doing so would suppress the
-            // same id when it (re)appears in future polls with a valid stamp.
-            let ts_ok = v
-                .get("timestamp")
-                .and_then(|t| t.as_str())
-                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-                .map(|t| t.with_timezone(&Utc) >= cutoff)
-                .unwrap_or(false);
-            if ts_ok {
-                emitted_ids.insert(id);
-            }
-        }
-    }
 }
 
 /// Non-recursive scan of `chats_dir`: returns the newest file whose name
@@ -332,16 +273,16 @@ async fn watch_loop(
                             if first_bind {
                                 // §J preamble scan on first bind. Re-emit recent
                                 // assistant lines from the file's tail (timestamp
-                                // >= attach_time - 5s). Dedup against emitted_ids:
-                                // each id is tracked here so subsequent reads
-                                // don't re-emit.
+                                // >= attach_time - 5s). The kernel returns
+                                // (bodies, ids, file_len) from a SINGLE read, so
+                                // seeding emitted_ids from `ids` (no second read)
+                                // is race-free: an id can't be marked emitted
+                                // unless its body was surfaced in this same pass.
                                 match read_preamble_for_race(&found, attach_time, gemini_preamble_extractor) {
-                                    Ok((bodies, file_len)) => {
-                                        // The preamble extractor surfaced bodies WITHOUT ids,
-                                        // so we can't dedup THIS pass against future appends with
-                                        // the same id. To keep correctness, re-parse the preamble
-                                        // window's lines to grab ids and seed emitted_ids.
-                                        seed_emitted_ids_from_preamble(&found, attach_time, &mut emitted_ids);
+                                    Ok((bodies, ids, file_len)) => {
+                                        for id in ids.into_iter().flatten() {
+                                            emitted_ids.insert(id);
+                                        }
                                         for text in bodies {
                                             logger.log("GEMINI_PREAMBLE", &session_id, &text);
                                             buffer.push_str(&text);
@@ -659,5 +600,101 @@ mod tests {
             }
         }
         assert_eq!(out, vec!["Hello world".to_string()]);
+    }
+
+    // ── M1 TOCTOU regression ──────────────────────────────────────────────
+
+    #[test]
+    fn gemini_first_attach_does_not_silently_drop_concurrent_append() {
+        // M1 regression test. Old code had a TOCTOU on first attach:
+        //   1. read_preamble_for_race read the file → surfaced bodies for X, Y.
+        //   2. line Z appended to file.
+        //   3. seed_emitted_ids_from_preamble re-read the file → marked X, Y,
+        //      AND Z as already-emitted (Z's body was never surfaced).
+        //   4. next read_new_lines saw Z → dedup said "emitted" → silent drop.
+        //
+        // Fix: the kernel returns (bodies, ids, file_len) from a SINGLE read,
+        // so seeding emitted_ids from `ids` (no second file read) means an id
+        // can only be marked emitted if its body was surfaced in the same pass.
+        //
+        // This test exercises the fixed flow: scan + seed, simulate an append
+        // happening AFTER the kernel returned (i.e. what the old double-read
+        // would have racily incorporated into the seeder), then verify the
+        // appended line surfaces via the next read_new_lines.
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("session-2026-05-19T00-00-race.jsonl");
+        let now = Utc::now();
+        let fresh = now - chrono::Duration::seconds(1);
+
+        // Initial state: 2 fresh gemini lines.
+        let mut f = fs::File::create(&path).unwrap();
+        writeln!(
+            f,
+            r#"{{"id":"a","timestamp":"{}","type":"gemini","content":"first"}}"#,
+            fresh.to_rfc3339()
+        )
+        .unwrap();
+        writeln!(
+            f,
+            r#"{{"id":"b","timestamp":"{}","type":"gemini","content":"second"}}"#,
+            fresh.to_rfc3339()
+        )
+        .unwrap();
+        drop(f);
+
+        // Single-read preamble scan: surfaces bodies AND ids in one pass.
+        let (bodies, ids, file_len) =
+            read_preamble_for_race(&path, now, gemini_preamble_extractor).unwrap();
+        assert_eq!(
+            bodies.len(),
+            ids.len(),
+            "kernel must return parallel bodies/ids arrays"
+        );
+        assert_eq!(bodies, vec!["first".to_string(), "second".to_string()]);
+
+        // Seed emitted_ids ONLY from kernel's returned ids — no second file read.
+        let mut emitted_ids: HashSet<String> = HashSet::new();
+        for id in ids.into_iter().flatten() {
+            emitted_ids.insert(id);
+        }
+        assert!(emitted_ids.contains("a"));
+        assert!(emitted_ids.contains("b"));
+
+        // Race: a third line lands AFTER the kernel returned. In the old
+        // double-read this would have happened BETWEEN the two reads and the
+        // seeder would have pre-marked "c" as emitted — silently dropping its
+        // body on the next poll. With the single-read fix, "c" is invisible
+        // to the seed step and must surface here.
+        let mut f = fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(
+            f,
+            r#"{{"id":"c","timestamp":"{}","type":"gemini","content":"third"}}"#,
+            fresh.to_rfc3339()
+        )
+        .unwrap();
+        drop(f);
+
+        assert!(
+            !emitted_ids.contains("c"),
+            "M1 regression: id 'c' must NOT be pre-seeded after a single-read scan"
+        );
+
+        // Next poll picks up the new line cleanly.
+        let mut file_offset = file_len;
+        let mut line_remainder = String::new();
+        let new_lines = read_new_lines(&path, &mut file_offset, &mut line_remainder).unwrap();
+        let mut surfaced: Vec<String> = Vec::new();
+        for line in new_lines {
+            if let Some((id, c)) = extract_gemini_message(&line) {
+                if emitted_ids.insert(id) {
+                    surfaced.push(c);
+                }
+            }
+        }
+        assert_eq!(
+            surfaced,
+            vec!["third".to_string()],
+            "concurrently-appended line must surface, not be silently dropped"
+        );
     }
 }

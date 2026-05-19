@@ -136,17 +136,23 @@ pub(crate) fn read_new_lines(
 /// the first `\n` unless the window starts at offset 0, (3) only then convert
 /// to UTF-8 lossily.
 ///
-/// `extractor` is the per-backend "given a line, return its `(timestamp, body)`
-/// if it's an emission candidate, else None". The kernel does NOT attempt to
-/// understand the line shape; that's the caller's responsibility.
+/// `extractor` is the per-backend "given a line, return its
+/// `(timestamp, optional_id, body)` if it's an emission candidate, else None".
+/// The `id` slot lets backends that dedupe by id (Gemini) seed their dedup set
+/// directly from this single read — eliminating the M1 TOCTOU where a parallel
+/// `seed_emitted_ids_from_preamble` pass re-read the file and could mark an
+/// id as emitted whose body was appended between the two reads. Backends that
+/// don't dedupe (Claude, Codex) pass `None` for the id slot.
 ///
-/// Returns `(bodies, file_len)`. Callers should set `offset = file_len` so the
-/// subsequent `read_new_lines` polls start from current EOF.
+/// Returns `(bodies, ids, file_len)` where `bodies` and `ids` are parallel
+/// arrays: `ids[i]` is the optional id of `bodies[i]`. Callers should set
+/// `offset = file_len` so the subsequent `read_new_lines` polls start from
+/// current EOF.
 pub(crate) fn read_preamble_for_race(
     path: &Path,
     attach_time: DateTime<Utc>,
-    extractor: impl Fn(&str) -> Option<(DateTime<Utc>, String)>,
-) -> std::io::Result<(Vec<String>, u64)> {
+    extractor: impl Fn(&str) -> Option<(DateTime<Utc>, Option<String>, String)>,
+) -> std::io::Result<(Vec<String>, Vec<Option<String>>, u64)> {
     let initial_len = std::fs::metadata(path)?.len();
     let start = initial_len.saturating_sub(PREAMBLE_MAX_BYTES);
     let mut f = std::fs::File::open(path)?;
@@ -167,21 +173,23 @@ pub(crate) fn read_preamble_for_race(
     } else {
         match buf.iter().position(|&b| b == b'\n') {
             Some(i) => &buf[i + 1..],
-            None => return Ok((vec![], new_offset)), // single huge line, can't reason about it
+            None => return Ok((vec![], vec![], new_offset)), // single huge line, can't reason about it
         }
     };
     let text = String::from_utf8_lossy(bytes);
 
     let cutoff = attach_time - chrono::Duration::seconds(RACE_GRACE_SECS);
-    let mut out = Vec::new();
+    let mut bodies = Vec::new();
+    let mut ids = Vec::new();
     for line in text.lines() {
-        if let Some((ts, body)) = extractor(line) {
+        if let Some((ts, id, body)) = extractor(line) {
             if ts >= cutoff {
-                out.push(body);
+                bodies.push(body);
+                ids.push(id);
             }
         }
     }
-    Ok((out, new_offset))
+    Ok((bodies, ids, new_offset))
 }
 
 #[cfg(test)]
@@ -275,12 +283,14 @@ mod tests {
     // ── §J preamble scan tests ────────────────────────────────────────────
 
     /// Extractor for tests: reads `timestamp` field as RFC3339, `content` as the body.
-    fn test_extractor(line: &str) -> Option<(DateTime<Utc>, String)> {
+    /// `id` slot is unused (None) — backends that dedupe by id are covered in
+    /// gemini_watcher tests.
+    fn test_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
         let v: serde_json::Value = serde_json::from_str(line).ok()?;
         let ts_str = v.get("timestamp")?.as_str()?;
         let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
         let body = v.get("content")?.as_str()?.to_string();
-        Some((ts, body))
+        Some((ts, None, body))
     }
 
     #[test]
@@ -313,8 +323,9 @@ mod tests {
         .unwrap();
         drop(f);
 
-        let (bodies, file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
+        let (bodies, ids, file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
         assert_eq!(bodies, vec!["fresh".to_string()]);
+        assert_eq!(ids.len(), bodies.len(), "ids parallel to bodies");
         assert_eq!(file_len, fs::metadata(&path).unwrap().len());
     }
 
@@ -337,8 +348,9 @@ mod tests {
         }
         drop(f);
 
-        let (bodies, file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
+        let (bodies, ids, file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
         assert!(bodies.is_empty());
+        assert!(ids.is_empty());
         assert_eq!(file_len, fs::metadata(&path).unwrap().len());
     }
 
@@ -360,7 +372,7 @@ mod tests {
         .unwrap();
         drop(f);
 
-        let (bodies, _file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
+        let (bodies, _ids, _file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
         assert_eq!(bodies, vec!["future".to_string()]);
     }
 
@@ -392,7 +404,7 @@ mod tests {
         let file_size = fs::metadata(&path).unwrap().len();
         assert!(file_size > PREAMBLE_MAX_BYTES);
 
-        let (bodies, file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
+        let (bodies, _ids, file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
         assert_eq!(bodies, vec!["tail".to_string()]);
         assert_eq!(file_len, file_size);
     }
@@ -419,7 +431,7 @@ mod tests {
         .unwrap();
         drop(f);
 
-        let (bodies, _file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
+        let (bodies, _ids, _file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
         // The huge first line's tail (z's) won't parse; only "after-huge" is emitted.
         assert_eq!(bodies, vec!["after-huge".to_string()]);
     }
@@ -454,7 +466,7 @@ mod tests {
         drop(f);
 
         // Just verify the call returns Ok (no panic) and includes "tail-line".
-        let (bodies, _) = read_preamble_for_race(&path, now, test_extractor).unwrap();
+        let (bodies, _ids, _) = read_preamble_for_race(&path, now, test_extractor).unwrap();
         assert!(bodies.contains(&"tail-line".to_string()));
     }
 
@@ -471,8 +483,9 @@ mod tests {
         f.write_all(huge.as_bytes()).unwrap();
         drop(f);
 
-        let (bodies, file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
+        let (bodies, ids, file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
         assert!(bodies.is_empty());
+        assert!(ids.is_empty());
         assert_eq!(file_len, fs::metadata(&path).unwrap().len());
     }
 
@@ -494,7 +507,8 @@ mod tests {
         .unwrap();
         drop(f);
 
-        let (bodies, _file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
+        let (bodies, ids, _file_len) = read_preamble_for_race(&path, now, test_extractor).unwrap();
         assert_eq!(bodies, vec!["only".to_string()]);
+        assert_eq!(ids, vec![None]);
     }
 }

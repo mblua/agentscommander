@@ -63,13 +63,14 @@ pub fn spawn_watch_task(
 
 /// Extractor for `read_preamble_for_race`: pairs each emitted body with the
 /// line's top-level `timestamp` field so the kernel can apply its grace-window
-/// filter.
-fn codex_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, String)> {
+/// filter. Codex agent_message events have no stable per-line id we need for
+/// dedup, so the id slot is always `None`.
+fn codex_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
     let body = extract_agent_message(line)?;
     let v: serde_json::Value = serde_json::from_str(line).ok()?;
     let ts_str = v.get("timestamp")?.as_str()?;
     let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
-    Some((ts, body))
+    Some((ts, None, body))
 }
 
 /// Parse a single Codex rollout JSONL line and extract the `agent_message`
@@ -266,7 +267,7 @@ async fn watch_loop(
                             line_remainder.clear();
                             if first_bind {
                                 match read_preamble_for_race(&found, attach_time, codex_preamble_extractor) {
-                                    Ok((bodies, file_len)) => {
+                                    Ok((bodies, _ids, file_len)) => {
                                         for text in bodies {
                                             logger.log("CODEX_PREAMBLE", &session_id, &text);
                                             buffer.push_str(&text);
