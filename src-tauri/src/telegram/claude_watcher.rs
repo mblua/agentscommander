@@ -1,9 +1,11 @@
-// JSONL file watcher for Claude Code sessions.
-// Polls Claude Code's structured session log files for new assistant messages
-// and sends them to Telegram, bypassing the PTY-based pipeline entirely.
+// Claude Code JSONL session-file watcher.
+// Polls Claude Code's append-only structured session log for new assistant
+// messages and sends them to Telegram, bypassing the PTY-based pipeline.
+//
+// Shared scaffold (find_latest_jsonl, read_new_lines, polling/rotation
+// constants) lives in `jsonl_kernel.rs` — see commit 1 for the extraction.
 
-use std::io::{Read as IoRead, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 use tauri::Emitter;
@@ -11,11 +13,11 @@ use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
+use crate::telegram::jsonl_kernel::{
+    find_latest_jsonl, read_new_lines, POLL_INTERVAL_MS, ROTATION_STALE_SECS,
+};
 
-const POLL_INTERVAL_MS: u64 = 500;
 const FLUSH_DELAY_MS: u64 = 500;
-/// Duration a tracked file must be stale before switching to a newer one (file rotation guard)
-const ROTATION_STALE_SECS: u64 = 3;
 
 /// Spawn a JSONL file watcher task that polls for new assistant messages
 /// and sends them to Telegram via the shared buffer/send pipeline.
@@ -43,34 +45,6 @@ pub fn spawn_watch_task(
         .await;
         log::info!("[JSONL_EXIT] Watcher task ended for session {}", session_id);
     })
-}
-
-/// Find the most recently modified .jsonl file in the project directory.
-fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(project_dir).ok()?;
-    let mut best: Option<(PathBuf, SystemTime)> = None;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        if let Ok(meta) = entry.metadata() {
-            if let Ok(modified) = meta.modified() {
-                match &best {
-                    Some((_, best_time)) if modified > *best_time => {
-                        best = Some((path, modified));
-                    }
-                    None => {
-                        best = Some((path, modified));
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    best.map(|(p, _)| p)
 }
 
 /// Parse a single JSONL line and extract assistant text content.
@@ -118,69 +92,6 @@ fn extract_assistant_text(line: &str) -> Option<String> {
         }
         _ => None,
     }
-}
-
-/// Read new bytes from a file starting at the given byte offset.
-/// Returns parsed complete lines and updates the offset by actual bytes read.
-/// Partial lines are accumulated in `remainder` for the next poll.
-fn read_new_lines(
-    path: &Path,
-    offset: &mut u64,
-    remainder: &mut String,
-) -> std::io::Result<Vec<String>> {
-    let mut file = std::fs::File::open(path)?;
-    // Use metadata on the open handle (avoids TOCTOU with path-based metadata)
-    let file_len = file.metadata()?.len();
-
-    // G3: File truncation/shrink detection — reset to beginning
-    if file_len < *offset {
-        log::warn!(
-            "[JSONL_TRUNCATE] File shrank ({} < {}), resetting offset",
-            file_len,
-            *offset
-        );
-        *offset = 0;
-        remainder.clear();
-    }
-
-    if file_len <= *offset {
-        return Ok(vec![]);
-    }
-
-    file.seek(SeekFrom::Start(*offset))?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf)?;
-
-    // G2: Track offset by actual bytes read, not reported file length
-    *offset += buf.len() as u64;
-
-    // Prepend any partial line from previous read
-    if !remainder.is_empty() {
-        let mut combined = std::mem::take(remainder);
-        combined.push_str(&buf);
-        buf = combined;
-    }
-
-    let mut lines = Vec::new();
-    let mut last_newline = 0;
-
-    for (i, ch) in buf.char_indices() {
-        if ch == '\n' {
-            let line = &buf[last_newline..i];
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                lines.push(trimmed.to_string());
-            }
-            last_newline = i + 1;
-        }
-    }
-
-    // Keep unterminated tail in remainder for next poll
-    if last_newline < buf.len() {
-        *remainder = buf[last_newline..].to_string();
-    }
-
-    Ok(lines)
 }
 
 async fn watch_loop(

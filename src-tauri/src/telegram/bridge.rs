@@ -434,7 +434,7 @@ pub fn spawn_bridge(
     if let Some(project_dir) = jsonl_project_dir {
         // JSONL mode: watch Claude Code session log instead of PTY pipeline
         drop(rx); // not needed — no PTY bytes feed
-        super::jsonl_watcher::spawn_watch_task(
+        super::claude_watcher::spawn_watch_task(
             project_dir,
             bot_token.clone(),
             chat_id,
