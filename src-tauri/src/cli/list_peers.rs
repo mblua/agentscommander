@@ -982,26 +982,9 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
     peers
 }
 
-/// Apply the `--peer` filter to a discovered peer list (issue #259).
+/// Apply the `--peer` filter to a discovered peer list.
 ///
-/// Returns `Ok(filtered)` containing only peers whose canonical FQN exactly
-/// matches one of the requested names, emitted in the user-requested order
-/// after silent deduplication. Returns `Err(unknown)` listing every
-/// requested name that is absent from the discovered set; the caller is
-/// expected to report the error and exit non-zero without serializing any
-/// JSON.
-///
-/// Semantics — matches the after_help PEER FILTER block:
-///   - When `requested` is empty, returns `peers` unchanged (no-filter
-///     parity with the legacy behavior).
-///   - Matching is by exact equality on `PeerInfo.name` — no substring or
-///     case-folding.
-///   - Repeated `--peer` values are deduplicated silently while preserving
-///     the user's order for the unique entries.
-///   - Reachable=false peers are kept if their name matches; the filter is
-///     name-only.
-///   - On any unknown name, returns `Err(unknown)` containing every unknown
-///     name in the order it first appeared in `requested` (after dedup).
+/// Consumes `peers` by value so filtering does not require `PeerInfo: Clone`.
 fn apply_peer_filter(
     peers: Vec<PeerInfo>,
     requested: &[String],
@@ -1114,7 +1097,7 @@ pub fn execute(args: ListPeersArgs) -> i32 {
     let peers = discover_peers(&root);
 
     // No-filter fast path: behavior is byte-for-byte unchanged from the
-    // pre-#259 implementation when --peer is not supplied.
+    // pre-filter implementation when --peer is not supplied.
     if args.peer.is_empty() {
         return serialize_full_peers(&peers);
     }
@@ -1672,7 +1655,7 @@ mod tests {
         assert_eq!(execute_lean(args), 1);
     }
 
-    // ── Issue #259: --peer filter ─────────────────────────────────────
+    // ── §259 --peer filter ────────────────────────────────────────────
 
     #[test]
     fn peer_filter_empty_request_returns_input_unchanged() {
