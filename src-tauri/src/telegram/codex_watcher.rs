@@ -116,8 +116,14 @@ fn read_first_line(path: &Path) -> Option<String> {
 /// `rollout-*.jsonl` whose mtime is recent enough, parse its first
 /// `session_meta` line, and return the path whose `payload.cwd` (after
 /// canonicalization) equals the canonicalized `expected_cwd`, preferring the
-/// candidate with the newest `payload.timestamp` (which is when codex started
-/// or last appended to the session).
+/// candidate with the newest **file mtime**.
+///
+/// **mtime, not `payload.timestamp`**: `session_meta.payload.timestamp` is the
+/// session CREATION time and is NEVER updated on resume. M6 empirical (Codex
+/// 0.130.0) shows `codex resume --last` appends to the original file from the
+/// resumed session's creation day — so a 4-day-old file's `payload.timestamp`
+/// is 4 days old even when it was just appended to. mtime tracks the
+/// most-recently-written file, which is the live one Codex is appending to.
 ///
 /// Returns `None` if no candidate matches; the watcher polls again next tick.
 fn find_session_file(
@@ -129,7 +135,7 @@ fn find_session_file(
     let mtime_cutoff = attach_time - chrono::Duration::seconds(FILE_MTIME_GRACE_SECS);
     let mtime_cutoff_st: SystemTime = mtime_cutoff.into();
 
-    let mut best: Option<(PathBuf, DateTime<Utc>)> = None;
+    let mut best: Option<(PathBuf, SystemTime)> = None;
 
     for offset in 0..=DAY_WALK_DEPTH {
         let day = attach_time.date_naive() - chrono::Duration::days(offset);
@@ -154,11 +160,13 @@ fn find_session_file(
                 Ok(m) => m,
                 Err(_) => continue,
             };
+            let mtime = match meta.modified() {
+                Ok(m) => m,
+                Err(_) => continue, // can't compare without mtime
+            };
             // Skip files modified more than 5 min before attach (stale).
-            if let Ok(mtime) = meta.modified() {
-                if mtime < mtime_cutoff_st {
-                    continue;
-                }
+            if mtime < mtime_cutoff_st {
+                continue;
             }
             let first = match read_first_line(&path) {
                 Some(l) => l,
@@ -179,17 +187,9 @@ fn find_session_file(
             if canonicalize_cwd_for_codex(candidate_cwd) != normalized_expected {
                 continue;
             }
-            let ts_str = match payload.get("timestamp").and_then(|t| t.as_str()) {
-                Some(t) => t,
-                None => continue,
-            };
-            let ts = match DateTime::parse_from_rfc3339(ts_str) {
-                Ok(t) => t.with_timezone(&Utc),
-                Err(_) => continue,
-            };
             match &best {
-                Some((_, best_ts)) if ts > *best_ts => best = Some((path, ts)),
-                None => best = Some((path, ts)),
+                Some((_, best_mtime)) if mtime > *best_mtime => best = Some((path, mtime)),
+                None => best = Some((path, mtime)),
                 _ => {}
             }
         }
@@ -222,6 +222,7 @@ async fn watch_loop(
 
     let mut current_file: Option<PathBuf> = None;
     let mut current_file_mtime: Option<SystemTime> = None;
+    let mut last_mtime_advance: Instant = Instant::now();
     let mut file_offset: u64 = 0;
     let mut line_remainder = String::new();
     let mut search_warned = false;
@@ -243,18 +244,15 @@ async fn watch_loop(
         tokio::select! {
             _ = cancel.cancelled() => break,
             _ = poll_interval.tick() => {
-                // M5: only re-scan when we don't have a current file or the
-                // tracked file has gone stale (no mtime advance for ROTATION_STALE_SECS)
-                // or has been unlinked.
-                let need_rescan = match (&current_file, &current_file_mtime) {
-                    (None, _) => true,
-                    (Some(p), _) if !p.exists() => true,
-                    (Some(_), Some(mtime)) => {
-                        mtime.elapsed()
-                            .map(|d| d.as_secs() >= ROTATION_STALE_SECS)
-                            .unwrap_or(false)
-                    }
-                    _ => false,
+                // M5: re-scan only when we don't have a current file, the tracked
+                // file has been unlinked, or the file's mtime has not advanced
+                // for ROTATION_STALE_SECS wall-clock seconds (i.e. it might have
+                // been rotated out from under us). `last_mtime_advance` is
+                // updated below when we observe the file's current mtime grow.
+                let need_rescan = match &current_file {
+                    None => true,
+                    Some(p) if !p.exists() => true,
+                    Some(_) => last_mtime_advance.elapsed().as_secs() >= ROTATION_STALE_SECS,
                 };
 
                 if need_rescan {
@@ -293,9 +291,13 @@ async fn watch_loop(
                             }
                             current_file = Some(found);
                         }
-                        current_file_mtime = current_file.as_ref()
+                        let new_mtime = current_file.as_ref()
                             .and_then(|p| std::fs::metadata(p).ok())
                             .and_then(|m| m.modified().ok());
+                        if new_mtime != current_file_mtime {
+                            last_mtime_advance = Instant::now();
+                        }
+                        current_file_mtime = new_mtime;
                     } else if !search_warned {
                         logger.log("CODEX_WAIT", &session_id,
                             "no rollout matching cwd found yet");
@@ -314,8 +316,12 @@ async fn watch_loop(
                                     last_buffer_add = Instant::now();
                                 }
                             }
-                            current_file_mtime = std::fs::metadata(path).ok()
+                            let new_mtime = std::fs::metadata(path).ok()
                                 .and_then(|m| m.modified().ok());
+                            if new_mtime != current_file_mtime {
+                                last_mtime_advance = Instant::now();
+                            }
+                            current_file_mtime = new_mtime;
                         }
                         Err(e) => {
                             logger.log("CODEX_ERR", &session_id, &e.to_string());
@@ -502,31 +508,76 @@ mod tests {
     }
 
     #[test]
-    fn find_session_file_picks_newest_timestamp_when_multiple_match() {
+    fn find_session_file_picks_newest_mtime_when_multiple_match() {
+        // M6: tiebreaker is file mtime, not payload.timestamp — see
+        // find_session_file doc comment for why.
         let tmp = tempfile::tempdir().unwrap();
         let root = tmp.path();
         let now = Utc::now();
         let today = day_dir(root, now.date_naive());
 
         let cwd = r"C:\Users\foo\bar";
-        let ts_old = (now - chrono::Duration::seconds(60)).to_rfc3339();
-        let ts_new = (now - chrono::Duration::seconds(10)).to_rfc3339();
-
+        // Both files reference the same cwd; payload.timestamp values are not
+        // used for tie-breaking. Sleep 150 ms between writes so the two
+        // candidates have definitely-distinct mtimes on Windows NTFS.
+        let ts = now.to_rfc3339();
         let _old = write_rollout(
             &today,
             "rollout-old.jsonl",
             &cwd.replace('\\', "\\\\"),
-            &ts_old,
+            &ts,
         );
+        std::thread::sleep(std::time::Duration::from_millis(150));
         let expected_new = write_rollout(
             &today,
             "rollout-new.jsonl",
             &cwd.replace('\\', "\\\\"),
-            &ts_new,
+            &ts,
         );
 
         let found = find_session_file(root, "c:\\users\\foo\\bar", now);
         assert_eq!(found, Some(expected_new));
+    }
+
+    #[test]
+    fn find_session_file_picks_resumed_file_even_with_old_payload_timestamp() {
+        // M6 use case: codex exec resume --last appends to a 4-day-old file.
+        // The candidate has payload.timestamp = 4 days ago but mtime = now.
+        // Another (older session, abandoned) candidate exists with both
+        // payload.timestamp and mtime "today (earlier)".
+        // The mtime tiebreaker should pick the resumed file (current mtime),
+        // NOT the abandoned same-day file.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        let now = Utc::now();
+        let cwd = r"C:\Users\foo\bar";
+
+        // Abandoned same-day session — its payload.timestamp is "today" but
+        // it was last touched a couple of minutes ago.
+        let today = day_dir(root, now.date_naive());
+        let abandoned_today = write_rollout(
+            &today,
+            "rollout-abandoned.jsonl",
+            &cwd.replace('\\', "\\\\"),
+            &(now - chrono::Duration::minutes(2)).to_rfc3339(),
+        );
+        std::thread::sleep(std::time::Duration::from_millis(150));
+
+        // Resumed file lives 4 days back — its payload.timestamp is 4 days ago
+        // but its mtime is "now" (we just wrote it = the resume just appended).
+        let four_days_ago = now - chrono::Duration::days(4);
+        let dir4 = day_dir(root, four_days_ago.date_naive());
+        let resumed = write_rollout(
+            &dir4,
+            "rollout-resumed-4d.jsonl",
+            &cwd.replace('\\', "\\\\"),
+            &four_days_ago.to_rfc3339(),
+        );
+
+        let found = find_session_file(root, "c:\\users\\foo\\bar", now);
+        assert_eq!(found, Some(resumed));
+        // The abandoned file should NOT have been chosen.
+        assert_ne!(found, Some(abandoned_today));
     }
 
     #[test]

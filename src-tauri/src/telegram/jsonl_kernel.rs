@@ -147,12 +147,18 @@ pub(crate) fn read_preamble_for_race(
     attach_time: DateTime<Utc>,
     extractor: impl Fn(&str) -> Option<(DateTime<Utc>, String)>,
 ) -> std::io::Result<(Vec<String>, u64)> {
-    let len = std::fs::metadata(path)?.len();
-    let start = len.saturating_sub(PREAMBLE_MAX_BYTES);
+    let initial_len = std::fs::metadata(path)?.len();
+    let start = initial_len.saturating_sub(PREAMBLE_MAX_BYTES);
     let mut f = std::fs::File::open(path)?;
     f.seek(SeekFrom::Start(start))?;
-    let mut buf: Vec<u8> = Vec::with_capacity((len - start) as usize);
+    let mut buf: Vec<u8> = Vec::with_capacity((initial_len - start) as usize);
     f.read_to_end(&mut buf)?;
+    // Return the offset that matches what we ACTUALLY read (start + bytes read),
+    // not the stale path-level metadata `initial_len`. Concurrent writers can
+    // grow the file between the metadata call and the read; using the stale
+    // value would leave a gap that `read_new_lines` then re-reads, causing
+    // duplicate sends to Telegram.
+    let new_offset = start + buf.len() as u64;
 
     // Drop everything before the first `\n` UNLESS we read from offset 0.
     // The seek point at `len - 64 KiB` almost certainly lands mid-line.
@@ -161,7 +167,7 @@ pub(crate) fn read_preamble_for_race(
     } else {
         match buf.iter().position(|&b| b == b'\n') {
             Some(i) => &buf[i + 1..],
-            None => return Ok((vec![], len)), // single huge line, can't reason about it
+            None => return Ok((vec![], new_offset)), // single huge line, can't reason about it
         }
     };
     let text = String::from_utf8_lossy(bytes);
@@ -175,7 +181,7 @@ pub(crate) fn read_preamble_for_race(
             }
         }
     }
-    Ok((out, len))
+    Ok((out, new_offset))
 }
 
 #[cfg(test)]

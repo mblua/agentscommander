@@ -133,12 +133,17 @@ fn seed_emitted_ids_from_preamble(
                 Ok(v) => v,
                 Err(_) => continue,
             };
+            // Match gemini_preamble_extractor exactly: a line is "emitted" by
+            // the kernel iff it has a parseable timestamp >= cutoff. A line
+            // without a timestamp is dropped by the extractor, so we MUST NOT
+            // pre-mark its id as emitted here — doing so would suppress the
+            // same id when it (re)appears in future polls with a valid stamp.
             let ts_ok = v
                 .get("timestamp")
                 .and_then(|t| t.as_str())
                 .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
                 .map(|t| t.with_timezone(&Utc) >= cutoff)
-                .unwrap_or(true); // unknown timestamp → treat as recent
+                .unwrap_or(false);
             if ts_ok {
                 emitted_ids.insert(id);
             }
@@ -223,6 +228,7 @@ async fn watch_loop(
     let mut chats_dir: Option<PathBuf> = None;
     let mut current_file: Option<PathBuf> = None;
     let mut current_file_mtime: Option<SystemTime> = None;
+    let mut last_mtime_advance: Instant = Instant::now();
     let mut file_offset: u64 = 0;
     let mut line_remainder = String::new();
     let mut emitted_ids: HashSet<String> = HashSet::new();
@@ -308,15 +314,14 @@ async fn watch_loop(
                 }
 
                 // Step 4: Kernel A discovery — pick newest session-*.jsonl by mtime.
-                let need_rescan = match (&current_file, &current_file_mtime) {
-                    (None, _) => true,
-                    (Some(p), _) if !p.exists() => true,
-                    (Some(_), Some(mtime)) => {
-                        mtime.elapsed()
-                            .map(|d| d.as_secs() >= ROTATION_STALE_SECS)
-                            .unwrap_or(false)
-                    }
-                    _ => false,
+                // M5: rescan only when we don't have a current file, the file
+                // was unlinked, or its mtime has not advanced for
+                // ROTATION_STALE_SECS wall-clock seconds. `last_mtime_advance`
+                // is updated below whenever we observe the file's mtime grow.
+                let need_rescan = match &current_file {
+                    None => true,
+                    Some(p) if !p.exists() => true,
+                    Some(_) => last_mtime_advance.elapsed().as_secs() >= ROTATION_STALE_SECS,
                 };
 
                 if need_rescan {
@@ -363,9 +368,13 @@ async fn watch_loop(
                             }
                             current_file = Some(found);
                         }
-                        current_file_mtime = current_file.as_ref()
+                        let new_mtime = current_file.as_ref()
                             .and_then(|p| std::fs::metadata(p).ok())
                             .and_then(|m| m.modified().ok());
+                        if new_mtime != current_file_mtime {
+                            last_mtime_advance = Instant::now();
+                        }
+                        current_file_mtime = new_mtime;
                     }
                 }
 
@@ -382,8 +391,12 @@ async fn watch_loop(
                                     }
                                 }
                             }
-                            current_file_mtime = std::fs::metadata(path).ok()
+                            let new_mtime = std::fs::metadata(path).ok()
                                 .and_then(|m| m.modified().ok());
+                            if new_mtime != current_file_mtime {
+                                last_mtime_advance = Instant::now();
+                            }
+                            current_file_mtime = new_mtime;
                         }
                         Err(e) => {
                             logger.log("GEMINI_ERR", &session_id, &e.to_string());
