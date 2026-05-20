@@ -830,6 +830,7 @@ pub async fn create_session_inner(
             120,
             30,
             &extra_env,
+            crate::session::profile::idle_tuning_for(agent_kind),
             app.clone(),
         )
         .map_err(|e| e.to_string())?;
