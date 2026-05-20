@@ -25,6 +25,17 @@ OUTPUT: JSON array of team peers. Each entry contains:\n  \
   teams             List of shared team names\n  \
   reachable         true if you can directly message this agent, false otherwise\n  \
   lastCodingAgent   Last coding CLI used (e.g., \"claude\", \"codex\"), if known\n\n\
+PEER FILTER (--peer):\n  \
+  Repeat `--peer <FQN>` to return only the named peers. Matching is by\n  \
+  exact canonical FQN (no substring, no case-folding). Duplicate values\n  \
+  are silently deduplicated and the output preserves the user-requested\n  \
+  order for unique entries. When omitted, all discovered peers are\n  \
+  returned (current behavior is byte-for-byte unchanged). If any\n  \
+  requested FQN is not present in the discovered peer set the command\n  \
+  exits non-zero with a clear stderr error naming the unknown peer(s);\n  \
+  no JSON is emitted on the unknown-peer path. Unreachable peers\n  \
+  (reachable=false) are still returned when their name matches —\n  \
+  filtering is by name only.\n\n\
 NOTES:\n  \
   - Working-state visibility is bound to the binary instance writing\n    \
     sessions.json. Peers running under a different AgentsCommander binary\n    \
@@ -47,6 +58,14 @@ pub struct ListPeersArgs {
     /// Agent root directory (required). Your working directory — used to identify you and your teams
     #[arg(long)]
     pub root: Option<String>,
+
+    /// Return only the peers whose canonical FQN exactly matches one of the given
+    /// values. Repeat the flag to request multiple peers (e.g. `--peer A --peer B`).
+    /// Duplicates are silently deduplicated. When omitted, every discovered peer is
+    /// returned. If any requested FQN is absent from the discovered set, the command
+    /// exits non-zero and writes a clear error to stderr. See `--help` PEER FILTER.
+    #[arg(long = "peer")]
+    pub peer: Vec<String>,
 }
 
 #[derive(Args)]
@@ -74,6 +93,17 @@ sessionId, exitCode, legacy status. Use `list-peers` if any of those are\n\
 needed.\n\n\
 PEER SET: identical to `list-peers` for the same --root. The two verbs\n\
 share a single discovery function (see issue #252).\n\n\
+PEER FILTER (--peer):\n  \
+  Repeat `--peer <FQN>` to return only the named peers. Matching is by\n  \
+  exact canonical FQN (no substring, no case-folding). Duplicate values\n  \
+  are silently deduplicated and the output preserves the user-requested\n  \
+  order for unique entries. When omitted, all discovered peers are\n  \
+  returned (current behavior is byte-for-byte unchanged). If any\n  \
+  requested FQN is not present in the discovered peer set the command\n  \
+  exits non-zero with a clear stderr error naming the unknown peer(s);\n  \
+  no JSON is emitted on the unknown-peer path. Unreachable peers\n  \
+  (reachable=false) are still returned when their name matches —\n  \
+  filtering is by name only. Identical semantics to `list-peers --peer`.\n\n\
 NOTES:\n  \
   - Working-state visibility is bound to the binary instance that wrote\n    \
     sessions.json (same caveat as `list-peers`).\n  \
@@ -93,6 +123,14 @@ pub struct ListPeersLeanArgs {
     /// Agent root directory (required). Your working directory — used to identify you and your teams
     #[arg(long)]
     pub root: Option<String>,
+
+    /// Return only the peers whose canonical FQN exactly matches one of the given
+    /// values. Repeat the flag to request multiple peers (e.g. `--peer A --peer B`).
+    /// Duplicates are silently deduplicated. When omitted, every discovered peer is
+    /// returned. If any requested FQN is absent from the discovered set, the command
+    /// exits non-zero and writes a clear error to stderr. See `--help` PEER FILTER.
+    #[arg(long = "peer")]
+    pub peer: Vec<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -944,6 +982,76 @@ fn discover_origin_peers(root: &str) -> Vec<PeerInfo> {
     peers
 }
 
+/// Apply the `--peer` filter to a discovered peer list.
+///
+/// Consumes `peers` by value so filtering does not require `PeerInfo: Clone`.
+fn apply_peer_filter(
+    peers: Vec<PeerInfo>,
+    requested: &[String],
+) -> Result<Vec<PeerInfo>, Vec<String>> {
+    if requested.is_empty() {
+        return Ok(peers);
+    }
+
+    // Dedupe `requested` while preserving the user's order for unique entries.
+    let mut unique: Vec<String> = Vec::with_capacity(requested.len());
+    for name in requested {
+        if !unique.iter().any(|n| n == name) {
+            unique.push(name.clone());
+        }
+    }
+
+    // Move peers into a name→PeerInfo map so emission is O(1) per requested
+    // name and we don't need PeerInfo: Clone. Discovery never produces
+    // duplicate names (see `discover_origin_peers` / `discover_wg_peers`),
+    // so this collapse is lossless.
+    let mut by_name: HashMap<String, PeerInfo> = peers
+        .into_iter()
+        .map(|p| (p.name.clone(), p))
+        .collect();
+
+    let unknown: Vec<String> = unique
+        .iter()
+        .filter(|n| !by_name.contains_key(n.as_str()))
+        .cloned()
+        .collect();
+    if !unknown.is_empty() {
+        return Err(unknown);
+    }
+
+    let filtered: Vec<PeerInfo> = unique
+        .into_iter()
+        .filter_map(|name| by_name.remove(&name))
+        .collect();
+    Ok(filtered)
+}
+
+/// Emit the unknown-peer error to stderr and return exit code 1. Used by
+/// both `execute` and `execute_lean` so the message shape is identical.
+fn report_unknown_peers(unknown: &[String], available: &[String]) -> i32 {
+    eprintln!(
+        "Error: unknown peer(s) requested via --peer: {}",
+        unknown.join(", ")
+    );
+    if available.is_empty() {
+        eprintln!("No peers were discovered for this --root.");
+    } else {
+        eprintln!("Available peers: {}", available.join(", "));
+    }
+    1
+}
+
+/// Run the shared discovery — WG-replica path when `root` is a replica, the
+/// origin-agent path otherwise. Factored so `execute` and `execute_lean`
+/// share the dispatch.
+fn discover_peers(root: &str) -> Vec<PeerInfo> {
+    if let Some(wg) = detect_wg_replica(root) {
+        discover_wg_peers(wg)
+    } else {
+        discover_origin_peers(root)
+    }
+}
+
 fn serialize_full_peers(peers: &[PeerInfo]) -> i32 {
     match serde_json::to_string_pretty(peers) {
         Ok(json) => {
@@ -986,12 +1094,19 @@ pub fn execute(args: ListPeersArgs) -> i32 {
         }
     };
 
-    let peers = if let Some(wg) = detect_wg_replica(&root) {
-        discover_wg_peers(wg)
-    } else {
-        discover_origin_peers(&root)
-    };
-    serialize_full_peers(&peers)
+    let peers = discover_peers(&root);
+
+    // No-filter fast path: behavior is byte-for-byte unchanged from the
+    // pre-filter implementation when --peer is not supplied.
+    if args.peer.is_empty() {
+        return serialize_full_peers(&peers);
+    }
+
+    let available: Vec<String> = peers.iter().map(|p| p.name.clone()).collect();
+    match apply_peer_filter(peers, &args.peer) {
+        Ok(filtered) => serialize_full_peers(&filtered),
+        Err(unknown) => report_unknown_peers(&unknown, &available),
+    }
 }
 
 pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
@@ -1009,12 +1124,17 @@ pub fn execute_lean(args: ListPeersLeanArgs) -> i32 {
         }
     };
 
-    let peers = if let Some(wg) = detect_wg_replica(&root) {
-        discover_wg_peers(wg)
-    } else {
-        discover_origin_peers(&root)
-    };
-    serialize_lean_peers(&peers)
+    let peers = discover_peers(&root);
+
+    if args.peer.is_empty() {
+        return serialize_lean_peers(&peers);
+    }
+
+    let available: Vec<String> = peers.iter().map(|p| p.name.clone()).collect();
+    match apply_peer_filter(peers, &args.peer) {
+        Ok(filtered) => serialize_lean_peers(&filtered),
+        Err(unknown) => report_unknown_peers(&unknown, &available),
+    }
 }
 
 #[cfg(test)]
@@ -1500,6 +1620,7 @@ mod tests {
         let args = ListPeersArgs {
             token: None,
             root: Some("anything".into()),
+            peer: Vec::new(),
         };
         assert_eq!(execute(args), 1);
     }
@@ -1509,6 +1630,7 @@ mod tests {
         let args = ListPeersArgs {
             token: Some("11111111-1111-1111-1111-111111111111".into()),
             root: None,
+            peer: Vec::new(),
         };
         assert_eq!(execute(args), 1);
     }
@@ -1518,6 +1640,7 @@ mod tests {
         let args = ListPeersLeanArgs {
             token: None,
             root: Some("anything".into()),
+            peer: Vec::new(),
         };
         assert_eq!(execute_lean(args), 1);
     }
@@ -1527,7 +1650,321 @@ mod tests {
         let args = ListPeersLeanArgs {
             token: Some("11111111-1111-1111-1111-111111111111".into()),
             root: None,
+            peer: Vec::new(),
         };
         assert_eq!(execute_lean(args), 1);
+    }
+
+    // ── §259 --peer filter ────────────────────────────────────────────
+
+    #[test]
+    fn peer_filter_empty_request_returns_input_unchanged() {
+        // No --peer supplied → list-peers must behave byte-for-byte as
+        // before (no filter, no reorder, no allocation surprises).
+        let peers = vec![
+            sample_peer_info("project/origin-a"),
+            sample_peer_info("project:wg-1-team/dev"),
+            sample_peer_info("project:wg-1-team/arch"),
+        ];
+        let result = apply_peer_filter(peers, &[]).expect("empty filter is Ok");
+        let names: Vec<&str> = result.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "project/origin-a",
+                "project:wg-1-team/dev",
+                "project:wg-1-team/arch",
+            ],
+            "empty --peer must preserve discovery order verbatim"
+        );
+    }
+
+    #[test]
+    fn peer_filter_single_peer_returns_only_that_peer() {
+        let peers = vec![
+            sample_peer_info("project:wg-1-team/dev"),
+            sample_peer_info("project:wg-1-team/arch"),
+            sample_peer_info("project/origin-a"),
+        ];
+        let result =
+            apply_peer_filter(peers, &["project:wg-1-team/arch".to_string()]).expect("Ok");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].name, "project:wg-1-team/arch");
+    }
+
+    #[test]
+    fn peer_filter_multiple_peers_preserves_user_order() {
+        // Discovery order is [dev, arch, origin]; user asks for
+        // [arch, origin, dev] → emit in that order, not discovery order.
+        let peers = vec![
+            sample_peer_info("project:wg-1-team/dev"),
+            sample_peer_info("project:wg-1-team/arch"),
+            sample_peer_info("project/origin-a"),
+        ];
+        let requested = vec![
+            "project:wg-1-team/arch".to_string(),
+            "project/origin-a".to_string(),
+            "project:wg-1-team/dev".to_string(),
+        ];
+        let result = apply_peer_filter(peers, &requested).expect("Ok");
+        let names: Vec<&str> = result.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "project:wg-1-team/arch",
+                "project/origin-a",
+                "project:wg-1-team/dev",
+            ]
+        );
+    }
+
+    #[test]
+    fn peer_filter_duplicates_are_silently_deduplicated() {
+        let peers = vec![
+            sample_peer_info("project:wg-1-team/dev"),
+            sample_peer_info("project:wg-1-team/arch"),
+        ];
+        let requested = vec![
+            "project:wg-1-team/dev".to_string(),
+            "project:wg-1-team/arch".to_string(),
+            "project:wg-1-team/dev".to_string(), // duplicate
+            "project:wg-1-team/arch".to_string(), // duplicate
+        ];
+        let result = apply_peer_filter(peers, &requested).expect("Ok");
+        let names: Vec<&str> = result.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["project:wg-1-team/dev", "project:wg-1-team/arch"],
+            "duplicates must collapse to first-occurrence order with no\
+             repeats and no error"
+        );
+    }
+
+    #[test]
+    fn peer_filter_unknown_peer_returns_err_with_unknown_names() {
+        let peers = vec![
+            sample_peer_info("project:wg-1-team/dev"),
+            sample_peer_info("project:wg-1-team/arch"),
+        ];
+        let requested = vec![
+            "project:wg-1-team/dev".to_string(),
+            "project:wg-1-team/ghost".to_string(),
+            "project:wg-1-team/missing".to_string(),
+        ];
+        let err = apply_peer_filter(peers, &requested).expect_err("must Err");
+        assert_eq!(
+            err,
+            vec![
+                "project:wg-1-team/ghost".to_string(),
+                "project:wg-1-team/missing".to_string()
+            ],
+            "Err must list every unknown name in first-occurrence order"
+        );
+    }
+
+    #[test]
+    fn peer_filter_unknown_dedupes_before_reporting() {
+        // Repeated unknown should appear once in the error list.
+        let peers = vec![sample_peer_info("project:wg-1-team/dev")];
+        let requested = vec![
+            "project:wg-1-team/ghost".to_string(),
+            "project:wg-1-team/ghost".to_string(),
+        ];
+        let err = apply_peer_filter(peers, &requested).expect_err("must Err");
+        assert_eq!(err, vec!["project:wg-1-team/ghost".to_string()]);
+    }
+
+    #[test]
+    fn peer_filter_match_is_exact_no_substring() {
+        // "dev" must not match "project:wg-1-team/dev"; FQNs are matched
+        // by exact equality only.
+        let peers = vec![sample_peer_info("project:wg-1-team/dev")];
+        let err = apply_peer_filter(peers, &["dev".to_string()]).expect_err("must Err");
+        assert_eq!(err, vec!["dev".to_string()]);
+    }
+
+    #[test]
+    fn peer_filter_match_is_case_sensitive() {
+        let peers = vec![sample_peer_info("project:wg-1-team/Dev")];
+        let err = apply_peer_filter(peers, &["project:wg-1-team/dev".to_string()])
+            .expect_err("must Err — names differ in case");
+        assert_eq!(err, vec!["project:wg-1-team/dev".to_string()]);
+    }
+
+    #[test]
+    fn peer_filter_keeps_unreachable_peers_when_name_matches() {
+        // Filtering is by name only; reachable=false must NOT cause the
+        // peer to be excluded when its FQN is requested.
+        let mut unreachable = sample_peer_info("project:wg-1-team/unreachable");
+        unreachable.reachable = false;
+        let peers = vec![unreachable];
+        let result =
+            apply_peer_filter(peers, &["project:wg-1-team/unreachable".to_string()]).expect("Ok");
+        assert_eq!(result.len(), 1);
+        assert!(!result[0].reachable, "unreachable peer must survive the filter");
+    }
+
+    #[test]
+    fn peer_filter_against_empty_discovery_errors_with_all_unknowns() {
+        // No peers discovered, any --peer is unknown → fail fast.
+        let err = apply_peer_filter(Vec::new(), &["project/anything".to_string()])
+            .expect_err("must Err");
+        assert_eq!(err, vec!["project/anything".to_string()]);
+    }
+
+    #[test]
+    fn peer_filter_against_empty_discovery_and_empty_request_is_ok() {
+        // No discovery + no filter → no error, empty result. The no-filter
+        // fast path in execute would short-circuit before reaching the
+        // helper; this test just nails down helper behavior.
+        let result = apply_peer_filter(Vec::new(), &[]).expect("Ok");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn peer_filter_followed_by_lean_projection_preserves_filter_and_schema() {
+        // The lean schema is a projection over PeerInfo (LeanPeerInfo::from).
+        // Ensure that filter → lean projection composes: filtered names
+        // appear in the lean output in user-requested order.
+        let peers = vec![
+            sample_peer_info("project:wg-1-team/dev"),
+            sample_peer_info("project:wg-1-team/arch"),
+            sample_peer_info("project/origin-a"),
+        ];
+        let requested = vec![
+            "project/origin-a".to_string(),
+            "project:wg-1-team/dev".to_string(),
+        ];
+        let filtered = apply_peer_filter(peers, &requested).expect("Ok");
+        let lean: Vec<LeanPeerInfo> = filtered.iter().map(LeanPeerInfo::from).collect();
+        let lean_names: Vec<&str> = lean.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(lean_names, vec!["project/origin-a", "project:wg-1-team/dev"]);
+
+        // Verify the lean schema is still applied to filtered entries
+        // (verbose fields absent, essential fields present).
+        let json = serde_json::to_string(&lean).unwrap();
+        assert!(json.contains("\"name\":"));
+        assert!(json.contains("\"working\":"));
+        assert!(!json.contains("\"path\":"));
+        assert!(!json.contains("\"codingAgents\":"));
+    }
+
+    // ── §259 clap wiring: --peer is registered, repeatable, optional ──
+
+    #[test]
+    fn peer_flag_is_registered_on_list_peers() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let lp = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "list-peers")
+            .expect("list-peers subcommand");
+        let has_peer = lp.get_arguments().any(|a| a.get_id() == "peer");
+        assert!(has_peer, "list-peers must register a --peer flag");
+    }
+
+    #[test]
+    fn peer_flag_is_registered_on_list_peers_lean() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let lp = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "list-peers-lean")
+            .expect("list-peers-lean subcommand");
+        let has_peer = lp.get_arguments().any(|a| a.get_id() == "peer");
+        assert!(has_peer, "list-peers-lean must register a --peer flag");
+    }
+
+    #[test]
+    fn peer_flag_parses_repeatedly_for_list_peers() {
+        use clap::Parser;
+        let parsed = crate::cli::Cli::try_parse_from([
+            "agentscommander",
+            "list-peers",
+            "--token",
+            "11111111-1111-1111-1111-111111111111",
+            "--root",
+            "anything",
+            "--peer",
+            "project/a",
+            "--peer",
+            "project:wg-1-team/b",
+        ])
+        .expect("clap should accept repeated --peer");
+        let cmd = parsed.command.expect("subcommand present");
+        match cmd {
+            crate::cli::Commands::ListPeers(args) => {
+                assert_eq!(
+                    args.peer,
+                    vec!["project/a".to_string(), "project:wg-1-team/b".to_string()],
+                    "--peer must accumulate across occurrences"
+                );
+            }
+            _ => panic!("expected ListPeers subcommand"),
+        }
+    }
+
+    #[test]
+    fn peer_flag_parses_repeatedly_for_list_peers_lean() {
+        use clap::Parser;
+        let parsed = crate::cli::Cli::try_parse_from([
+            "agentscommander",
+            "list-peers-lean",
+            "--token",
+            "11111111-1111-1111-1111-111111111111",
+            "--root",
+            "anything",
+            "--peer",
+            "project/a",
+            "--peer",
+            "project:wg-1-team/b",
+        ])
+        .expect("clap should accept repeated --peer");
+        let cmd = parsed.command.expect("subcommand present");
+        match cmd {
+            crate::cli::Commands::ListPeersLean(args) => {
+                assert_eq!(
+                    args.peer,
+                    vec!["project/a".to_string(), "project:wg-1-team/b".to_string()]
+                );
+            }
+            _ => panic!("expected ListPeersLean subcommand"),
+        }
+    }
+
+    #[test]
+    fn list_peers_help_documents_peer_filter() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let lp = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "list-peers")
+            .expect("list-peers subcommand");
+        let after = lp
+            .get_after_help()
+            .expect("after_help present")
+            .to_string();
+        assert!(
+            after.contains("PEER FILTER"),
+            "list-peers after_help must document --peer"
+        );
+        assert!(after.contains("--peer"));
+        assert!(after.contains("exact"));
+    }
+
+    #[test]
+    fn list_peers_lean_help_documents_peer_filter() {
+        use clap::CommandFactory;
+        let cmd = crate::cli::Cli::command();
+        let lp = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "list-peers-lean")
+            .expect("list-peers-lean subcommand");
+        let after = lp
+            .get_after_help()
+            .expect("after_help present")
+            .to_string();
+        assert!(after.contains("PEER FILTER"));
+        assert!(after.contains("--peer"));
     }
 }
