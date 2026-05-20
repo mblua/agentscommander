@@ -6,8 +6,81 @@ use uuid::Uuid;
 use crate::config::settings::SettingsState;
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
+use crate::telegram::bridge::SessionReaderKind;
 use crate::telegram::manager::TelegramBridgeState;
 use crate::telegram::types::BridgeInfo;
+
+/// Derive which session-reader pipeline to spawn for a given session.
+///
+/// - `Ok(Some(kind))` — agent detected and resolver succeeded → caller spawns the reader.
+/// - `Ok(None)` — no agent detected (or Gemini in commit 3 — handled in commit 4)
+///   → caller falls back to PTY mode.
+/// - `Err(message)` — agent detected but resolver returned None → caller logs +
+///   emits `telegram_bridge_error` + early-returns with its contractual success
+///   value (or `Err` for `telegram_attach`).
+///
+/// **Mutual exclusion (H4) is asserted in debug builds.** The detection at
+/// `commands/session.rs:692-694` is mutually exclusive (Claude > Codex > Gemini),
+/// so the assertion is invariant.
+pub(crate) fn derive_reader(
+    shell: &str,
+    shell_args: &[String],
+    cwd: &str,
+    is_claude: bool,
+    is_codex: bool,
+    is_gemini: bool,
+) -> Result<Option<SessionReaderKind>, String> {
+    let kinds_set: u8 = u8::from(is_claude) + u8::from(is_codex) + u8::from(is_gemini);
+    debug_assert!(
+        kinds_set <= 1,
+        "agent-kind flags must be mutually exclusive — fix detection at commands/session.rs:692-694 (is_claude={}, is_codex={}, is_gemini={})",
+        is_claude, is_codex, is_gemini
+    );
+
+    let attach_time = chrono::Utc::now();
+
+    if is_claude {
+        return match crate::commands::session::resolve_claude_projects_dir(shell, shell_args, cwd)
+        {
+            Some(p) => Ok(Some(SessionReaderKind::Claude { project_dir: p })),
+            None => Err("Cannot resolve Claude projects dir".to_string()),
+        };
+    }
+    if is_codex {
+        return match crate::commands::codex_resolver::resolve_codex_sessions_root(
+            shell, shell_args, cwd,
+        ) {
+            Some(root) => Ok(Some(SessionReaderKind::Codex {
+                search_root: root,
+                cwd: cwd.to_string(),
+                attach_time,
+            })),
+            None => Err(
+                "Cannot resolve Codex sessions root (~/.codex/sessions/ missing)".to_string(),
+            ),
+        };
+    }
+    if is_gemini {
+        // H1 softened contract: spawn the watcher whenever `~/.gemini/` exists;
+        // the cwd-to-slug lookup is deferred to the watcher's per-poll
+        // `lookup_chats_dir_for_cwd`. Loud abort only if Gemini was never
+        // installed on this machine.
+        return match crate::commands::gemini_resolver::resolve_gemini_home(
+            shell, shell_args, cwd,
+        ) {
+            Some(home) => Ok(Some(SessionReaderKind::Gemini {
+                gemini_home: home,
+                cwd: cwd.to_string(),
+                attach_time,
+            })),
+            None => Err(
+                "Cannot resolve Gemini home (~/.gemini/ missing — Gemini never installed)"
+                    .to_string(),
+            ),
+        };
+    }
+    Ok(None) // No agent detected — caller falls back to PTY mode.
+}
 
 #[tauri::command]
 pub async fn telegram_attach(
@@ -20,55 +93,49 @@ pub async fn telegram_attach(
 ) -> Result<BridgeInfo, String> {
     let uuid = Uuid::parse_str(&session_id).map_err(|e| e.to_string())?;
 
-    // For Claude sessions we pre-resolve the JSONL `projects/<mangled-cwd>` directory
-    // so wrapper-driven `CLAUDE_CONFIG_DIR` overrides (e.g. `claude-mb`) are honored.
-    // If is_claude is true but the resolver returns None, fail loud: emit
-    // telegram_bridge_error and abort — silent fallback to PTY for Claude is exactly
-    // the noisy mode we are trying to retire.
-    //
     // Extract the fields the resolver needs and drop the SessionManager read guard
-    // BEFORE invoking the resolver — the resolver does blocking filesystem I/O
+    // BEFORE invoking `derive_reader` — the resolver does blocking filesystem I/O
     // (`which::which` walks `%PATH%`, opens wrapper scripts) that can take hundreds
     // of milliseconds. Holding a `tokio::sync::RwLock` read guard across that would
     // starve concurrent writers (create_session, restart_session, switch_session).
-    let (is_claude, shell, shell_args, working_directory) = {
+    let (is_claude, is_codex, is_gemini, shell, shell_args, working_directory) = {
         let session_mgr = app.state::<Arc<tokio::sync::RwLock<SessionManager>>>();
         let mgr = session_mgr.read().await;
         let session = mgr.get_session(uuid).await.ok_or("Session not found")?;
         (
             session.is_claude,
+            session.is_codex,
+            session.is_gemini,
             session.shell.clone(),
             session.shell_args.clone(),
             session.working_directory.clone(),
         )
-        // Guard dropped at end of this block, before the resolver call below.
     };
 
-    let jsonl_project_dir = if is_claude {
-        match crate::commands::session::resolve_claude_projects_dir(
-            &shell,
-            &shell_args,
-            &working_directory,
-        ) {
-            Some(p) => Some(p),
-            None => {
-                let err_msg = format!(
-                    "Telegram bridge: cannot resolve Claude projects dir for session {} (shell={:?}). Bridge inactive.",
-                    uuid, shell
-                );
-                log::error!("{}", err_msg);
-                let _ = app.emit(
-                    "telegram_bridge_error",
-                    serde_json::json!({
-                        "sessionId": session_id,
-                        "error": err_msg,
-                    }),
-                );
-                return Err(err_msg);
-            }
+    let reader = match derive_reader(
+        &shell,
+        &shell_args,
+        &working_directory,
+        is_claude,
+        is_codex,
+        is_gemini,
+    ) {
+        Ok(r) => r,
+        Err(reason) => {
+            let err_msg = format!(
+                "Telegram bridge: {} for session {} (shell={:?}). Bridge inactive.",
+                reason, uuid, shell
+            );
+            log::error!("{}", err_msg);
+            let _ = app.emit(
+                "telegram_bridge_error",
+                serde_json::json!({
+                    "sessionId": session_id,
+                    "error": err_msg,
+                }),
+            );
+            return Err(err_msg);
         }
-    } else {
-        None
     };
 
     let cfg = settings.read().await;
@@ -83,7 +150,7 @@ pub async fn telegram_attach(
     let pty_arc = pty_mgr.inner().clone();
     let mut tg = tg_mgr.lock().await;
     let info = tg
-        .attach(uuid, &bot, pty_arc, app.clone(), jsonl_project_dir)
+        .attach(uuid, &bot, pty_arc, app.clone(), reader)
         .map_err(|e| e.to_string())?;
 
     let _ = app.emit("telegram_bridge_attached", info.clone());

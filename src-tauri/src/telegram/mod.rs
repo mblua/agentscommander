@@ -1,5 +1,8 @@
 pub mod api;
 pub mod bridge;
-pub mod jsonl_watcher;
+pub mod claude_watcher;
+pub mod codex_watcher;
+pub mod gemini_watcher;
+pub mod jsonl_kernel;
 pub mod manager;
 pub mod types;

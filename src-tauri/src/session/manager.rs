@@ -68,6 +68,8 @@ impl SessionManager {
             git_repos_gen: 0,
             token: Uuid::new_v4(),
             is_claude: false,
+            is_codex: false,
+            is_gemini: false,
             was_detached: false,
             detached_geometry: None,
         };
@@ -325,6 +327,20 @@ impl SessionManager {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
             s.is_claude = val;
+        }
+    }
+
+    pub async fn set_is_codex(&self, id: Uuid, val: bool) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.is_codex = val;
+        }
+    }
+
+    pub async fn set_is_gemini(&self, id: Uuid, val: bool) {
+        let mut sessions = self.sessions.write().await;
+        if let Some(s) = sessions.get_mut(&id) {
+            s.is_gemini = val;
         }
     }
 

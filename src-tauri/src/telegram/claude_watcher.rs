@@ -1,21 +1,25 @@
-// JSONL file watcher for Claude Code sessions.
-// Polls Claude Code's structured session log files for new assistant messages
-// and sends them to Telegram, bypassing the PTY-based pipeline entirely.
+// Claude Code JSONL session-file watcher.
+// Polls Claude Code's append-only structured session log for new assistant
+// messages and sends them to Telegram, bypassing the PTY-based pipeline.
+//
+// Shared scaffold (find_latest_jsonl, read_new_lines, polling/rotation
+// constants) lives in `jsonl_kernel.rs` — see commit 1 for the extraction.
 
-use std::io::{Read as IoRead, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::SystemTime;
 
+use chrono::{DateTime, Utc};
 use tauri::Emitter;
 use tokio::time::{Duration, Instant};
 use tokio_util::sync::CancellationToken;
 
 use crate::telegram::bridge::{flush_buffer, BridgeLogger, DiagLogger};
+use crate::telegram::jsonl_kernel::{
+    find_latest_jsonl, read_new_lines, read_preamble_for_race, POLL_INTERVAL_MS,
+    ROTATION_STALE_SECS,
+};
 
-const POLL_INTERVAL_MS: u64 = 500;
 const FLUSH_DELAY_MS: u64 = 500;
-/// Duration a tracked file must be stale before switching to a newer one (file rotation guard)
-const ROTATION_STALE_SECS: u64 = 3;
 
 /// Spawn a JSONL file watcher task that polls for new assistant messages
 /// and sends them to Telegram via the shared buffer/send pipeline.
@@ -45,32 +49,16 @@ pub fn spawn_watch_task(
     })
 }
 
-/// Find the most recently modified .jsonl file in the project directory.
-fn find_latest_jsonl(project_dir: &Path) -> Option<PathBuf> {
-    let entries = std::fs::read_dir(project_dir).ok()?;
-    let mut best: Option<(PathBuf, SystemTime)> = None;
-
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
-            continue;
-        }
-        if let Ok(meta) = entry.metadata() {
-            if let Ok(modified) = meta.modified() {
-                match &best {
-                    Some((_, best_time)) if modified > *best_time => {
-                        best = Some((path, modified));
-                    }
-                    None => {
-                        best = Some((path, modified));
-                    }
-                    _ => {}
-                }
-            }
-        }
-    }
-
-    best.map(|(p, _)| p)
+/// Extractor for `read_preamble_for_race`: pairs each emitted body with the
+/// line's `timestamp` field so the kernel can apply its grace-window filter.
+/// Claude does not dedupe by id (idempotent assistant turns are absent in the
+/// JSONL format), so the id slot is always `None`.
+fn claude_preamble_extractor(line: &str) -> Option<(DateTime<Utc>, Option<String>, String)> {
+    let body = extract_assistant_text(line)?;
+    let v: serde_json::Value = serde_json::from_str(line).ok()?;
+    let ts_str = v.get("timestamp")?.as_str()?;
+    let ts = DateTime::parse_from_rfc3339(ts_str).ok()?.with_timezone(&Utc);
+    Some((ts, None, body))
 }
 
 /// Parse a single JSONL line and extract assistant text content.
@@ -120,69 +108,6 @@ fn extract_assistant_text(line: &str) -> Option<String> {
     }
 }
 
-/// Read new bytes from a file starting at the given byte offset.
-/// Returns parsed complete lines and updates the offset by actual bytes read.
-/// Partial lines are accumulated in `remainder` for the next poll.
-fn read_new_lines(
-    path: &Path,
-    offset: &mut u64,
-    remainder: &mut String,
-) -> std::io::Result<Vec<String>> {
-    let mut file = std::fs::File::open(path)?;
-    // Use metadata on the open handle (avoids TOCTOU with path-based metadata)
-    let file_len = file.metadata()?.len();
-
-    // G3: File truncation/shrink detection — reset to beginning
-    if file_len < *offset {
-        log::warn!(
-            "[JSONL_TRUNCATE] File shrank ({} < {}), resetting offset",
-            file_len,
-            *offset
-        );
-        *offset = 0;
-        remainder.clear();
-    }
-
-    if file_len <= *offset {
-        return Ok(vec![]);
-    }
-
-    file.seek(SeekFrom::Start(*offset))?;
-    let mut buf = String::new();
-    file.read_to_string(&mut buf)?;
-
-    // G2: Track offset by actual bytes read, not reported file length
-    *offset += buf.len() as u64;
-
-    // Prepend any partial line from previous read
-    if !remainder.is_empty() {
-        let mut combined = std::mem::take(remainder);
-        combined.push_str(&buf);
-        buf = combined;
-    }
-
-    let mut lines = Vec::new();
-    let mut last_newline = 0;
-
-    for (i, ch) in buf.char_indices() {
-        if ch == '\n' {
-            let line = &buf[last_newline..i];
-            let trimmed = line.trim();
-            if !trimmed.is_empty() {
-                lines.push(trimmed.to_string());
-            }
-            last_newline = i + 1;
-        }
-    }
-
-    // Keep unterminated tail in remainder for next poll
-    if last_newline < buf.len() {
-        *remainder = buf[last_newline..].to_string();
-    }
-
-    Ok(lines)
-}
-
 async fn watch_loop(
     project_dir: PathBuf,
     token: String,
@@ -202,6 +127,7 @@ async fn watch_loop(
     let mut last_buffer_add = Instant::now();
     let flush_delay = Duration::from_millis(FLUSH_DELAY_MS);
 
+    let attach_time: DateTime<Utc> = Utc::now();
     let mut current_file: Option<PathBuf> = None;
     let mut current_file_mtime: Option<SystemTime> = None;
     let mut file_offset: u64 = 0;
@@ -250,13 +176,32 @@ async fn watch_loop(
 
                     if should_switch {
                         if current_file.is_none() {
-                            // First attach: skip existing content (seek to end)
-                            file_offset = latest.as_ref()
-                                .and_then(|p| std::fs::metadata(p).ok())
-                                .map(|m| m.len())
-                                .unwrap_or(0);
-                            logger.log("JSONL_FILE", &session_id,
-                                &format!("initial file, skipping to offset {}", file_offset));
+                            // First attach (§J preamble scan): emit recent
+                            // lines from the file's tail, then set offset = file_len.
+                            if let Some(ref p) = latest {
+                                match read_preamble_for_race(p, attach_time, claude_preamble_extractor) {
+                                    Ok((bodies, _ids, file_len)) => {
+                                        for text in bodies {
+                                            logger.log("JSONL_PREAMBLE", &session_id, &text);
+                                            buffer.push_str(&text);
+                                            buffer.push('\n');
+                                            last_buffer_add = Instant::now();
+                                        }
+                                        file_offset = file_len;
+                                        logger.log("JSONL_FILE", &session_id,
+                                            &format!("initial file, preamble scan done, offset={}", file_offset));
+                                    }
+                                    Err(e) => {
+                                        logger.log("JSONL_ERR", &session_id,
+                                            &format!("preamble scan failed: {}", e));
+                                        file_offset = std::fs::metadata(p).ok()
+                                            .map(|m| m.len())
+                                            .unwrap_or(0);
+                                    }
+                                }
+                            } else {
+                                file_offset = 0;
+                            }
                         } else {
                             // File rotation (new Claude session): read from start
                             file_offset = 0;

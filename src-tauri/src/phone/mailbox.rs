@@ -2404,6 +2404,8 @@ mod tests {
             is_coordinator: false,
             token: "t".into(),
             is_claude: true,
+            is_codex: false,
+            is_gemini: false,
             was_detached: false,
             detached_geometry: None,
         }
