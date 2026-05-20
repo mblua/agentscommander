@@ -147,14 +147,21 @@ fn gemini_tokens_have_resume(tokens: &[&str], start: usize) -> bool {
 }
 
 fn inject_gemini_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
+    // #260 — resume tokens sourced from the CodingAgentProfile (single source
+    // of truth). G6: slice-pattern destructure, never index — a future
+    // <2-element slice degrades gracefully instead of panicking in release.
+    let &[resume_flag, resume_value] = CodingAgentKind::Gemini.profile().resume_tokens else {
+        debug_assert!(false, "Gemini resume_tokens must have exactly 2 elements");
+        return false;
+    };
     match executable_basename(shell).as_str() {
         "gemini" => {
             let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
             if gemini_tokens_have_resume(&tokens, 0) {
                 return false;
             }
-            shell_args.insert(0, "--resume".to_string());
-            shell_args.insert(1, "latest".to_string());
+            shell_args.insert(0, resume_flag.to_string());
+            shell_args.insert(1, resume_value.to_string());
             true
         }
         "cmd" => {
@@ -166,8 +173,8 @@ fn inject_gemini_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
                 if gemini_tokens_have_resume(&tokens, idx + 1) {
                     return false;
                 }
-                shell_args.insert(idx + 1, "--resume".to_string());
-                shell_args.insert(idx + 2, "latest".to_string());
+                shell_args.insert(idx + 1, resume_flag.to_string());
+                shell_args.insert(idx + 2, resume_value.to_string());
                 return true;
             }
 
@@ -184,8 +191,8 @@ fn inject_gemini_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
                     if gemini_tokens_have_resume(&token_refs, idx + 1) {
                         return false;
                     }
-                    tokens.insert(idx + 1, "--resume".to_string());
-                    tokens.insert(idx + 2, "latest".to_string());
+                    tokens.insert(idx + 1, resume_flag.to_string());
+                    tokens.insert(idx + 2, resume_value.to_string());
                     *arg = tokens.join(" ");
                     return true;
                 }
@@ -198,14 +205,21 @@ fn inject_gemini_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
 }
 
 fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
+    // #260 — resume tokens sourced from the CodingAgentProfile (single source
+    // of truth). G6: slice-pattern destructure, never index — a future
+    // <2-element slice degrades gracefully instead of panicking in release.
+    let &[resume_subcmd, resume_flag] = CodingAgentKind::Codex.profile().resume_tokens else {
+        debug_assert!(false, "Codex resume_tokens must have exactly 2 elements");
+        return false;
+    };
     match executable_basename(shell).as_str() {
         "codex" => {
             let tokens: Vec<&str> = shell_args.iter().map(|arg| arg.as_str()).collect();
             if codex_tokens_have_resume(&tokens, 0) || codex_has_explicit_subcommand(&tokens, 0) {
                 return false;
             }
-            shell_args.insert(0, "resume".to_string());
-            shell_args.insert(1, "--last".to_string());
+            shell_args.insert(0, resume_subcmd.to_string());
+            shell_args.insert(1, resume_flag.to_string());
             true
         }
         "cmd" => {
@@ -219,8 +233,8 @@ fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
                 {
                     return false;
                 }
-                shell_args.insert(idx + 1, "resume".to_string());
-                shell_args.insert(idx + 2, "--last".to_string());
+                shell_args.insert(idx + 1, resume_subcmd.to_string());
+                shell_args.insert(idx + 2, resume_flag.to_string());
                 return true;
             }
 
@@ -239,8 +253,8 @@ fn inject_codex_resume(shell: &str, shell_args: &mut Vec<String>) -> bool {
                     {
                         return false;
                     }
-                    tokens.insert(idx + 1, "resume".to_string());
-                    tokens.insert(idx + 2, "--last".to_string());
+                    tokens.insert(idx + 1, resume_subcmd.to_string());
+                    tokens.insert(idx + 2, resume_flag.to_string());
                     *arg = tokens.join(" ");
                     return true;
                 }
@@ -721,18 +735,21 @@ pub async fn create_session_inner(
         claude_project_exists,
         &full_cmd,
     ) {
+        // #260 — Claude's resume flag from the CodingAgentProfile. resume_tokens
+        // is a 1-element const for Claude, so [0] is provably in bounds.
+        let continue_flag = CodingAgentKind::Claude.profile().resume_tokens[0];
         if let Some(ref aid) = agent_id {
             if executable_basename(&shell) == "cmd" {
                 if let Some(last) = shell_args.last_mut() {
                     if executable_basename(last) == "claude"
                         || last.to_lowercase().contains("claude")
                     {
-                        *last = format!("{} --continue", last);
+                        *last = format!("{} {}", last, continue_flag);
                         log::info!("Auto-injected --continue for agent '{}' (prior conversation exists, cmd path)", aid);
                     }
                 }
             } else {
-                shell_args.push("--continue".to_string());
+                shell_args.push(continue_flag.to_string());
                 log::info!(
                     "Auto-injected --continue for agent '{}' (prior conversation exists)",
                     aid
