@@ -128,12 +128,11 @@ pub struct CodingAgentProfile {
     /// Argv tokens AC auto-injects to resume the agent's prior conversation,
     /// in argv order. The single source of truth for both injection
     /// (`create_session_inner`) and stripping (`strip_auto_injected_args`):
-    ///   - Claude → `["--continue"]`         (appended to argv)
-    ///   - Codex  → `["resume", "--last"]`   (prepended as a subcommand)
-    ///   - Gemini → `["--resume", "latest"]` (prepended; the joined
-    ///                                        `--resume=latest` form is
-    ///                                        handled by the Gemini stripper
-    ///                                        as a recognised variant)
+    /// - Claude → `["--continue"]` (appended to argv)
+    /// - Codex → `["resume", "--last"]` (prepended as a subcommand)
+    /// - Gemini → `["--resume", "latest"]` (prepended; the joined
+    ///   `--resume=latest` form is handled by the Gemini stripper as a
+    ///   recognised variant)
     pub resume_tokens: &'static [&'static str],
 }
 
@@ -266,7 +265,10 @@ mod tests {
         ] {
             assert!(kind.profile().idle.seed_initial_activity);
         }
-        assert!(IdleTuning::DEFAULT.seed_initial_activity);
+        // Routed through the non-const `idle_tuning_for` so this stays a
+        // runtime assertion (a bare `IdleTuning::DEFAULT.…` is const-folded,
+        // which clippy::assertions_on_constants rejects).
+        assert!(idle_tuning_for(None).seed_initial_activity);
     }
 
     /// dev-rust R1.5 — locks the §11 "all three profiles == DEFAULT → zero
