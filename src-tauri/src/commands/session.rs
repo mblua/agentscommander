@@ -9,6 +9,7 @@ use crate::config::settings::{AppSettings, SettingsState};
 use crate::pty::manager::PtyManager;
 use crate::session::manager::SessionManager;
 use crate::session::session::{SessionInfo, SessionRepo};
+use crate::session::profile::CodingAgentKind;
 use crate::telegram::manager::TelegramBridgeState;
 use crate::DetachedSessionsState;
 
@@ -682,45 +683,29 @@ pub async fn create_session_inner(
 
     let id = session.id;
 
-    // Detect coding agent families so we can materialize provider-specific context files.
     let mut shell_args = shell_args;
     let full_cmd = format!("{} {}", shell, shell_args.join(" "));
-    let cmd_basenames: Vec<String> = full_cmd
-        .split_whitespace()
-        .map(executable_basename)
-        .collect();
-    // Mutually exclusive detection — precedence Claude > Codex > Gemini.
-    // Required for the `debug_assert!(mutual_exclusion)` invariant inside
-    // `derive_reader` (telegram session-reader dispatch) landing in commit 3.
-    let is_claude = cmd_basenames.iter().any(|b| b.starts_with("claude"));
-    let is_codex = !is_claude && cmd_basenames.iter().any(|b| b.starts_with("codex"));
-    let is_gemini =
-        !is_claude && !is_codex && cmd_basenames.iter().any(|b| b.starts_with("gemini"));
-    let context_target = if is_claude {
-        Some(crate::config::session_context::ManagedContextTarget::Claude)
-    } else if is_codex {
-        Some(crate::config::session_context::ManagedContextTarget::Codex)
-    } else if is_gemini {
-        Some(crate::config::session_context::ManagedContextTarget::Gemini)
-    } else {
-        None
+    // #260 — single detector (session/profile.rs). Replaces the old
+    // starts_with triple; this is the SAME call `strip_auto_injected_args`
+    // makes, so the persisted recipe and the runtime identity cannot disagree.
+    let agent_kind = CodingAgentKind::detect(&shell, &shell_args);
+    let context_target = match agent_kind {
+        Some(CodingAgentKind::Claude) => {
+            Some(crate::config::session_context::ManagedContextTarget::Claude)
+        }
+        Some(CodingAgentKind::Codex) => {
+            Some(crate::config::session_context::ManagedContextTarget::Codex)
+        }
+        Some(CodingAgentKind::Gemini) => {
+            Some(crate::config::session_context::ManagedContextTarget::Gemini)
+        }
+        None => None,
     };
 
-    // Persist agent-kind flags in the SessionManager AND the local clone.
-    // The manager update ensures get_session() returns the correct flag (for telegram_attach).
-    // The local clone update ensures SessionInfo.is_* is correct (for auto-attach sites).
-    if is_claude {
-        mgr.set_is_claude(id, true).await;
-        session.is_claude = true;
-    }
-    if is_codex {
-        mgr.set_is_codex(id, true).await;
-        session.is_codex = true;
-    }
-    if is_gemini {
-        mgr.set_is_gemini(id, true).await;
-        session.is_gemini = true;
-    }
+    // Single source of truth — store the identity on the SessionManager record
+    // AND the local clone (the latter feeds the imminent `session_created` emit).
+    mgr.set_agent_kind(id, agent_kind).await;
+    session.agent_kind = agent_kind;
 
     // Auto-inject --continue for Claude agents when AC has reason to believe a prior
     // conversation exists for this session (issue #82: `is_dir()` alone is unsound;
@@ -731,7 +716,7 @@ pub async fn create_session_inner(
         .map(|p| p.is_dir())
         .unwrap_or(false);
     if should_inject_continue(
-        is_claude,
+        agent_kind == Some(CodingAgentKind::Claude),
         skip_auto_resume,
         claude_project_exists,
         &full_cmd,
@@ -756,7 +741,7 @@ pub async fn create_session_inner(
         }
     }
 
-    if is_codex && !skip_auto_resume {
+    if agent_kind == Some(CodingAgentKind::Codex) && !skip_auto_resume {
         if let Some(ref aid) = agent_id {
             if inject_codex_resume(&shell, &mut shell_args) {
                 log::info!("Auto-injected `codex resume --last` for agent '{}'", aid);
@@ -764,7 +749,7 @@ pub async fn create_session_inner(
         }
     }
 
-    if is_gemini && !skip_auto_resume {
+    if agent_kind == Some(CodingAgentKind::Gemini) && !skip_auto_resume {
         if let Some(ref aid) = agent_id {
             if inject_gemini_resume(&shell, &mut shell_args) {
                 log::info!("Auto-injected `gemini --resume latest` for agent '{}'", aid);
@@ -798,7 +783,7 @@ pub async fn create_session_inner(
     };
 
     // Claude consumes the materialized CLAUDE.md via --append-system-prompt-file.
-    if is_claude {
+    if agent_kind == Some(CodingAgentKind::Claude) {
         if let Some(context_path) = materialized_context_path.as_ref() {
             if executable_basename(&shell) == "cmd" {
                 if let Some(last) = shell_args.last_mut() {
@@ -1086,9 +1071,7 @@ pub async fn create_session(
                         &info.shell,
                         &info.shell_args,
                         &cwd,
-                        info.is_claude,
-                        info.is_codex,
-                        info.is_gemini,
+                        info.agent_kind,
                     ) {
                         Ok(r) => r,
                         Err(reason) => {
@@ -1367,9 +1350,7 @@ pub async fn restart_session(
                         &session_info.shell,
                         &session_info.shell_args,
                         &cwd,
-                        session_info.is_claude,
-                        session_info.is_codex,
-                        session_info.is_gemini,
+                        session_info.agent_kind,
                     ) {
                         Ok(r) => r,
                         Err(reason) => {
@@ -1775,9 +1756,7 @@ pub async fn create_root_agent_session(
                         &info.shell,
                         &info.shell_args,
                         &root_agent_path,
-                        info.is_claude,
-                        info.is_codex,
-                        info.is_gemini,
+                        info.agent_kind,
                     ) {
                         Ok(r) => r,
                         Err(reason) => {

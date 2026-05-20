@@ -4,6 +4,7 @@ use tokio::sync::RwLock;
 use uuid::Uuid;
 
 use super::session::{Session, SessionInfo, SessionRepo, SessionStatus};
+use super::profile::CodingAgentKind;
 use crate::config::settings::WindowGeometry;
 use crate::errors::AppError;
 
@@ -67,9 +68,7 @@ impl SessionManager {
             is_coordinator,
             git_repos_gen: 0,
             token: Uuid::new_v4(),
-            is_claude: false,
-            is_codex: false,
-            is_gemini: false,
+            agent_kind: None,
             was_detached: false,
             detached_geometry: None,
         };
@@ -323,24 +322,12 @@ impl SessionManager {
         }
     }
 
-    pub async fn set_is_claude(&self, id: Uuid, val: bool) {
+    /// Set the resolved coding-agent identity. Called once by
+    /// `create_session_inner` immediately after `CodingAgentKind::detect`.
+    pub async fn set_agent_kind(&self, id: Uuid, kind: Option<CodingAgentKind>) {
         let mut sessions = self.sessions.write().await;
         if let Some(s) = sessions.get_mut(&id) {
-            s.is_claude = val;
-        }
-    }
-
-    pub async fn set_is_codex(&self, id: Uuid, val: bool) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
-            s.is_codex = val;
-        }
-    }
-
-    pub async fn set_is_gemini(&self, id: Uuid, val: bool) {
-        let mut sessions = self.sessions.write().await;
-        if let Some(s) = sessions.get_mut(&id) {
-            s.is_gemini = val;
+            s.agent_kind = kind;
         }
     }
 
